@@ -1,0 +1,66 @@
+# Redis Sentinel 高可用（1 主 2 从 + 3 哨兵）
+# 用法:
+#   helm repo add bitnami https://charts.bitnami.com/bitnami
+#   helm install vortexops-redis bitnami/redis \
+#     -n vortexops-infra \
+#     -f manifests/deps/redis-sentinel.yaml
+#
+# 适配规模：M（缓存 / 锁 / 限流 / WS 路由）
+# 升级到 L/XL 时改用 Redis Cluster（见 03-hyper-large/manifests/redis-cluster.yaml）
+
+architecture: replication
+
+auth:
+  password: "CHANGE_ME_REDIS_PASSWORD"
+  existingSecret: ""           # 生产用 redis-creds
+  secretKey: password
+
+master:
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ssd-retain
+  resources:
+    requests: { cpu: "0.5", memory: "1Gi" }
+    limits:   { cpu: "1",   memory: "2Gi" }
+  commands:
+    - redis-server
+    - "--save"
+    - "60 1000"
+    - "--appendonly"
+    - "yes"
+    - "--maxmemory-policy"
+    - "allkeys-lru"
+    - "--maxmemory"
+    - "2gb"
+
+replica:
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ssd-retain
+  resources:
+    requests: { cpu: "0.5", memory: "1Gi" }
+    limits:   { cpu: "1",   memory: "2Gi" }
+
+sentinel:
+  enabled: true
+  quorum: 2
+  downAfterMilliseconds: 5000
+  failoverTimeout: 30000
+  parallelSyncs: 1
+  masterName: vortexops-redis-master
+  resources:
+    requests: { cpu: "0.25", memory: "256Mi" }
+    limits:   { cpu: "0.5",  memory: "512Mi" }
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra
+
+pdb:
+  create: true
+  minAvailable: 1

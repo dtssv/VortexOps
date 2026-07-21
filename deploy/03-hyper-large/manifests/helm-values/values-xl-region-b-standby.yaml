@@ -1,0 +1,118 @@
+# =============================================================================
+# VortexOps XL 规模 values（备 Region standby）
+# 与主 Region 差异：
+#   - mode: standby，syncer 不主动连被管集群
+#   - PG 走读副本（流复制从主 Region）
+#   - Redis 走从节点（异步复制）
+#   - 对象存储指向备 Region bucket（S3 CRR 同步过来）
+#   - 副本数较少（故障切换时再扩容）
+# =============================================================================
+
+global:
+  imageRegistry: registry.us-west-2.vortexops.io
+  imageTag: "1.0.0"
+  imagePullSecrets:
+    - name: registry-creds
+  region: us-west-2
+  mode: standby              # standby 模式
+
+postgresql:
+  enabled: false
+  external:
+    # 备 Region Citus coordinator（流复制从主 Region）
+    host: citus-coordinator-standby.vortexops-infra.svc
+    port: 5432
+    database: vortexops
+    username: vortexops
+    existingSecret: pg-creds-standby
+    secretKey: password
+    sharding:
+      enabled: true
+      type: citus
+      shardKey: workspace_id
+
+redis:
+  enabled: false
+  external:
+    host: vortexops-redis-cluster-standby.vortexops-infra.svc
+    port: 6379
+    clusterMode: true
+    existingSecret: redis-creds-standby
+    secretKey: password
+    # standby 模式：只读，不写入
+    readOnly: true
+
+objectStorage:
+  type: s3
+  endpoint: https://s3.us-west-2.vortexops.io
+  bucket: vortexops-us-west-2     # 主 Region CRR 复制到此 bucket
+  region: us-west-2
+  existingSecret: s3-creds-standby
+  pathStyle: false
+
+kafka:
+  enabled: true
+  bootstrapServers: vortexops-kafka-standby-kafka-bootstrap.vortexops-infra.svc:9092
+  tls:
+    enabled: true
+    existingSecret: kafka-tls-standby
+
+elasticsearch:
+  enabled: true
+  url: https://opensearch-standby.vortexops-infra.svc:9200
+
+# ---------- 平台组件（standby，副本数少，故障切换时扩容） ----------
+apiserver:
+  replicas: 2
+  autoscaling:
+    enabled: false               # standby 不主动扩容
+  config:
+    dbPoolMax: 40                # 走读副本，连接数较少
+    jwtSecretRef: { name: jwt-secret, key: key }
+    encryptionKeyRef: { name: kms-key, key: key }
+
+syncer:
+  replicas: 0                    # standby 模式不启动 syncer（故障切换时启动）
+  config:
+    clustersShardPerInstance: 50
+    namespaceShardCount: 64
+
+wsGateway:
+  replicas: 2
+  config:
+    maxConnectionsPerInstance: 5000
+
+extApiGateway:
+  replicas: 2
+pipelineWorker:
+  replicas: 2
+webhook:
+  replicas: 2
+frontend:
+  replicas: 2
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: vortexops-standby.internal
+      service: frontend
+      port: 80
+    - host: api-standby.vortexops.internal
+      service: apiserver
+      port: 8080
+  tls:
+    - secretName: vortexops-standby-tls
+      hosts: [vortexops-standby.internal, api-standby.vortexops.internal]
+
+systemSettings:
+  workspaceCreation:
+    allowSelfCreate: false       # standby 只读
+  cve:
+    defaultPolicy: block_critical
+  audit:
+    asyncMode: true

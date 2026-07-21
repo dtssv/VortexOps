@@ -1,0 +1,75 @@
+# Harbor（镜像仓库，CVE 扫描 + 签名）
+# 用法:
+#   helm repo add harbor https://helm.goharbor.io
+#   helm install harbor harbor/harbor \
+#     -n vortexops-infra \
+#     -f manifests/deps/harbor.yaml
+#
+# 适配规模：M（团队级镜像仓库）
+# 业务镜像 CVE 扫描结果回写 vo_images.scan_status
+
+expose:
+  type: ingress
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-tls
+      notarySecretName: harbor-notary-tls
+  ingress:
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    hosts:
+      core: harbor.vortexops.internal
+      notary: notary.vortexops.internal
+
+externalURL: https://harbor.vortexops.internal
+
+# 镜像存储：用 MinIO 对象存储（避免 PVC 容量瓶颈）
+persistence:
+  persistentVolumeClaim:
+    registry:
+      existingClaim: ""
+      storageClass: ""
+      size: 200Gi
+      useClaim: false   # 改用 S3
+    jobservice:
+      storageClass: ssd
+      size: 10Gi
+    database:
+      storageClass: ssd-retain
+      size: 10Gi
+    redis:
+      storageClass: ssd
+      size: 5Gi
+    trivy:
+      storageClass: ssd
+      size: 10Gi
+
+# 镜像存储指向 MinIO（与平台共用 MinIO 集群，但用独立 bucket）
+imageChartStorage:
+  type: s3
+  s3:
+    region: us-east-1
+    bucket: harbor-registry
+    endpoint: http://minio.vortexops-infra.svc:9000
+    accesskey: admin
+    secretkey: CHANGE_ME_S3_SECRET
+
+# Trivy CVE 扫描
+trivy:
+  enabled: true
+  resources:
+    requests: { cpu: "0.5", memory: "512Mi" }
+    limits:   { cpu: "1",   memory: "1Gi" }
+
+# 镜像签名（cosign / notary v2）
+notary:
+  enabled: true
+
+# GC：定期清理无引用 blob
+garbageCollection:
+  enabled: true
+  schedule: "0 1 * * 0"     # 每周日凌晨 01:00

@@ -1,0 +1,168 @@
+# Kafka 集群（9 broker KRaft 模式，无 ZooKeeper）
+# 用法:
+#   helm repo add strimzi https://strimzi.io/charts/
+#   helm install strimzi strimzi/strimzi-kafka-operator -n vortexops-infra
+#   kubectl apply -f manifests/kafka-cluster.yaml -n vortexops-infra
+#
+# 适配规模：XL（审计 / Token 计量 / 构建事件）
+# 替代 02 层的 NATS
+
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: vortexops-kafka
+  namespace: vortexops-infra
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 9
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+    config:
+      # KRaft 模式
+      process.roles: broker,controller
+      inter.broker.protocol.version: "3.7"
+      # 默认副本数
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      # 分区数
+      num.partitions: 12
+      # 日志保留
+      log.retention.hours: 168           # 7 天
+      log.segment.bytes: 1073741824      # 1 GB
+      # 性能
+      auto.create.topics.enable: "false"
+      delete.topic.enable: "true"
+      compression.type: lz4
+    storage:
+      type: jbod
+      volumes:
+        - id: 0
+          type: persistent-claim
+          size: 500Gi
+          storageClass: ssd-retain
+          deleteClaim: false
+        - id: 1
+          type: persistent-claim
+          size: 500Gi
+          storageClass: ssd-retain
+          deleteClaim: false
+    resources:
+      requests: { cpu: "4", memory: "8Gi" }
+      limits:   { cpu: "8", memory: "16Gi" }
+    template:
+      pod:
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kafka
+                    app.kubernetes.io/instance: vortexops-kafka
+                topologyKey: kubernetes.io/hostname
+
+  # KRaft 模式不需要 ZooKeeper（spec.zookeeper 留空或省略）
+
+  # Topic Operator：自动管理 Topic CR
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+
+---
+# 预创建 Topic（高吞吐 Topic 需要更多分区）
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: build-events
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 24
+  replicas: 3
+  config:
+    retention.ms: 604800000          # 7 天
+    cleanup.policy: delete
+    compression.type: lz4
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: release-events
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 24
+  replicas: 3
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: audit-async
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 48                    # 高写入 Topic，多分区
+  replicas: 3
+  config:
+    retention.ms: 7776000000        # 90 天
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: ext-api-audit
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 24
+  replicas: 3
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: inference-usage
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 48
+  replicas: 3
+  config:
+    retention.ms: 7776000000
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: notification-dispatch
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 12
+  replicas: 3
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: cdc-dml
+  namespace: vortexops-infra
+  labels:
+    strimzi.io/cluster: vortexops-kafka
+spec:
+  partitions: 24
+  replicas: 3
+  config:
+    retention.ms: 86400000          # 1 天（仅用于 ES 索引同步，短期）

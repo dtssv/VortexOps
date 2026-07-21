@@ -1,0 +1,208 @@
+# =============================================================================
+# VortexOps XL 规模 values（主 Region）
+# 适配规模：10万+应用 / 1000+被管集群 / 5万+ WS
+# 依赖组件（Citus / Redis Cluster / Kafka / OpenSearch）需先在 vortexops-infra 部署
+# =============================================================================
+
+global:
+  imageRegistry: registry.us-east-1.vortexops.io
+  imageTag: "1.0.0"
+  imagePullSecrets:
+    - name: registry-creds
+  region: us-east-1
+  mode: primary              # primary / standby
+
+postgresql:
+  enabled: false
+  external:
+    # Citus coordinator 入口（Patroni VIP）
+    host: citus-coordinator.vortexops-infra.svc
+    port: 5432
+    readReplicaHost: citus-coordinator-readreplica.vortexops-infra.svc
+    database: vortexops
+    username: vortexops
+    existingSecret: pg-creds
+    secretKey: password
+    # Citus 分片已启用
+    sharding:
+      enabled: true
+      type: citus
+      shardKey: workspace_id
+
+redis:
+  enabled: false
+  external:
+    # Redis Cluster 入口（任意节点均可作为入口）
+    host: vortexops-redis-cluster.vortexops-infra.svc
+    port: 6379
+    clusterMode: true
+    existingSecret: redis-creds
+    secretKey: password
+
+objectStorage:
+  type: s3
+  endpoint: https://s3.us-east-1.vortexops.io
+  bucket: vortexops-us-east-1
+  region: us-east-1
+  existingSecret: s3-creds
+  secretKeys:
+    accessKey: accessKey
+    secretKey: secretKey
+  pathStyle: false
+  # 跨区域复制到备 Region
+  replication:
+    enabled: true
+    targetBucket: vortexops-us-west-2
+    targetRegion: us-west-2
+
+kafka:
+  enabled: true
+  bootstrapServers: vortexops-kafka-kafka-bootstrap.vortexops-infra.svc:9092
+  tls:
+    enabled: true
+    existingSecret: kafka-tls
+
+elasticsearch:
+  enabled: true
+  url: https://opensearch.vortexops-infra.svc:9200
+
+# ---------- 平台组件（XL 规模） ----------
+apiserver:
+  replicas: 8
+  autoscaling:
+    enabled: true
+    minReplicas: 8
+    maxReplicas: 30
+    targetCPU: 65
+    # 行为：快速扩容，缓慢缩容
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 60
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 60
+      scaleDown:
+        stabilizationWindowSeconds: 600
+        policies:
+          - type: Percent
+            value: 25
+            periodSeconds: 300
+  config:
+    dbPoolMax: 80
+    jwtSecretRef: { name: jwt-secret, key: key }
+    encryptionKeyRef: { name: kms-key, key: key }
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits:   { cpu: "4", memory: "8Gi" }
+  podDisruptionBudget:
+    minAvailable: 4
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: vortexops-apiserver
+
+syncer:
+  replicas: 20
+  config:
+    clustersShardPerInstance: 50
+    namespaceShardCount: 64
+    leaderElectionLeaseName: vortexops-syncer-lease
+    # 每 syncer 实例的最大 Informer 内存
+    informerCacheMemory: "2Gi"
+  resources:
+    requests: { cpu: "1",  memory: "2Gi" }
+    limits:   { cpu: "2",  memory: "4Gi" }
+  podDisruptionBudget:
+    minAvailable: 15
+
+wsGateway:
+  replicas: 10
+  autoscaling:
+    enabled: true
+    minReplicas: 10
+    maxReplicas: 30
+    targetCPU: 70
+    # 自定义指标：连接数
+    customMetrics:
+      - name: vortexops_ws_connections
+        target:
+          type: AverageValue
+          averageValue: 4000     # 单副本 4000 连接触发扩容
+  config:
+    maxConnectionsPerInstance: 5000
+    sessionAffinity: cookie
+  resources:
+    requests: { cpu: "1", memory: "2Gi" }
+    limits:   { cpu: "2", memory: "4Gi" }
+
+extApiGateway:
+  replicas: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 12
+    targetCPU: 70
+
+pipelineWorker:
+  replicas: 6
+  autoscaling:
+    enabled: true
+    minReplicas: 6
+    maxReplicas: 20
+    targetCPU: 70
+
+webhook:
+  replicas: 3
+  tls:
+    certFile: /etc/vortexops/tls/tls.crt
+    keyFile: /etc/vortexops/tls/tls.key
+    caFile: /etc/vortexops/tls/ca.crt
+
+frontend:
+  replicas: 4
+
+# ---------- Ingress ----------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    # 全局限流
+    nginx.ingress.kubernetes.io/limit-connections: "1000"
+    nginx.ingress.kubernetes.io/limit-rps: "200"
+  hosts:
+    - host: vortexops.internal
+      service: frontend
+      port: 80
+    - host: api.vortexops.internal
+      service: apiserver
+      port: 8080
+    - host: ext.vortexops.internal
+      service: ext-api-gateway
+      port: 8080
+    - host: ws.vortexops.internal
+      service: ws-gateway
+      port: 8081
+      websocket: true
+  tls:
+    - secretName: vortexops-tls
+      hosts: [vortexops.internal, api.vortexops.internal, ext.vortexops.internal, ws.vortexops.internal]
+
+# ---------- 系统设置 ----------
+systemSettings:
+  workspaceCreation:
+    allowSelfCreate: true
+    maxPerUser: 10
+  cve:
+    defaultPolicy: block_critical    # 超大规模默认更严格
+  audit:
+    asyncMode: true                  # 审计异步落库（Kafka）
+  inference:
+    tokenQuotaEnabled: true

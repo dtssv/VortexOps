@@ -1,0 +1,21 @@
+[Unit]
+Description=VortexOps Frontend (nginx)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/nginx -g "daemon off;" -c /etc/vortexops/frontend/nginx.conf
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=/usr/sbin/nginx -s stop
+Restart=on-failure
+RestartSec=5
+
+# 平滑升级
+TimeoutStopSec=30
+KillSignal=SIGQUIT
+
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

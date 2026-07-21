@@ -1,0 +1,13 @@
+FROM rancher/k3s:v1.31.5-k3s1
+
+COPY k8s-init/entrypoint.sh /k8s-init/entrypoint.sh
+COPY k8s-init/init.sh /k8s-init/init.sh
+COPY k8s-init/install-underlay.sh /k8s-init/install-underlay.sh
+COPY k8s-init/install-calico.sh /k8s-init/install-calico.sh
+COPY k8s-init/calico.yaml /k8s-init/calico.yaml
+COPY k8s-init/k3s-registries.yaml /etc/rancher/k3s/registries.yaml
+
+RUN sed -i 's/\r$//' /k8s-init/entrypoint.sh /k8s-init/init.sh /k8s-init/install-underlay.sh /k8s-init/install-calico.sh /k8s-init/calico.yaml && \
+    chmod +x /k8s-init/entrypoint.sh /k8s-init/init.sh /k8s-init/install-underlay.sh /k8s-init/install-calico.sh
+
+ENTRYPOINT ["/bin/sh", "/k8s-init/entrypoint.sh"]

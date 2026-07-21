@@ -1,0 +1,589 @@
+# VortexOps 本地开发全栈（S 规模 happy path）
+# 启动：docker compose -f deploy/docker-compose.dev.yml up -d
+# 迁移：docker compose -f deploy/docker-compose.dev.yml run --rm migrate
+# 或：docker compose -f deploy/docker-compose.dev.yml run --rm --entrypoint /app/vortexops apiserver migrate up
+
+services:
+  postgres:
+    # pgvector/pgvector:pg16 = 官方 postgres:16 + 预装的 pgvector 扩展，
+    # 否则执行 `CREATE EXTENSION vector` 时会报 `type "vector" does not exist`。
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: vortexops
+      POSTGRES_PASSWORD: vortexops_dev
+      POSTGRES_DB: vortexops
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vortexops -d vortexops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    # Apache 官方镜像（Bitnami 自 2025-08 起移除免费版本化镜像，改用 apache/kafka）。
+    # KRaft 模式单节点，无需 ZooKeeper。
+    image: apache/kafka:3.7.1
+    environment:
+      KAFKA_NODE_ID: 0
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      # KRaft 模式必须提供 cluster id（base64 编码的 16 字节）。
+      CLUSTER_ID: "5Y6k3oShThO7nlU1A8L6Dg"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: vortexops_dev
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 搜索引擎：使用 OpenSearch（Apache 2.0 开源）替代 Elastic 8.x（SSPL/Elastic License，非 OSI 开源）。
+  # OpenSearch 兼容 ES 7.x 的 _search / _index_template REST API，后端 elasticsearch/client.go 无需改动。
+  # 服务名保留 elasticsearch，使后端 VORTEXOPS_ES_URL=http://elasticsearch:9200 不变。
+  # DISABLE_SECURITY_PLUGIN=true 关闭安全插件，开发环境无认证（与原 xpack.security.enabled=false 行为一致）。
+  elasticsearch:
+    image: opensearchproject/opensearch:2.18.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      bootstrap.memory_lock: "true"
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/opensearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      start_period: 120s
+      retries: 18
+
+  # ---------- 构建集成：Jenkins ----------
+  # 系统变量化 Jenkins：全局唯一构建执行器。
+  # 首次启动后由 integration-seed 脚本生成 API Token 并写入 vo_credentials / vo_jenkins_instances。
+  # 独立构建器：Docker-in-Docker，暴露 TCP Docker API 供 Jenkins 远程调用。
+  # Jenkins Pipeline 通过 DOCKER_HOST=tcp://builder:2375 调用，不在 Jenkins 内运行 dockerd。
+  # 镜像构建与 push 在 builder 内执行，直接访问同网络的 registry:5000。
+  builder:
+    image: docker:24-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""          # 开发环境关闭 TLS，裸 TCP
+      DOCKER_DRIVER: overlay2
+    entrypoint: ["dockerd-entrypoint.sh"]
+    # dockerd 启动前先把共享工作区属主改为 jenkins(uid 1000)，
+    # 否则 Jenkins 容器(uid 1000) 无法在 root 属主的卷上 mkdir。
+    command: ["sh", "-c", "chown -R 1000:1000 /vortexops/workspace && exec dockerd-entrypoint.sh --host=tcp://0.0.0.0:2375 --insecure-registry=registry:5000"]
+    volumes:
+      - builderdata:/var/lib/docker
+      # 构建工作区共享卷：Jenkins 触发 docker run builder_image / docker build 时，
+      # docker daemon 运行在 builder 容器，-v 路径需在 builder 侧可见，故两边挂同一卷到同路径。
+      - buildworkspace:/vortexops/workspace
+    healthcheck:
+      test: ["CMD-SHELL", "docker info >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile.jenkins
+    ports:
+      - "8082:8080"     # Web UI
+      - "50000:50000"   # Agent JNLP
+    volumes:
+      - jenkinsdata:/var/jenkins_home
+      - ./jenkins-init/init.groovy:/var/jenkins_home/init.groovy.d/init.groovy:ro
+      # 构建工作区共享卷：Jenkins 把 checkout 后的源码同步到 /vortexops/workspace/<buildId>，
+      # builder 侧 docker daemon 通过同路径访问，供 docker run builder_image 与 docker build 使用。
+      - buildworkspace:/vortexops/workspace
+    environment:
+      JENKINS_ADMIN_ID: admin
+      JENKINS_ADMIN_PASSWORD: vortexops_dev
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+      DOCKER_HOST: "tcp://builder:2375"   # Jenkins 内 docker 命令远程调用 builder
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/login || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    depends_on:
+      builder:
+        condition: service_healthy
+
+  # ---------- 构建集成：镜像仓库 ----------
+  # 系统变量化镜像仓库：全局唯一默认 registry。
+  # 开发环境使用 Docker Registry v2（官方 registry:2 镜像，单容器，轻量，匿名访问）。
+  # 后端 RegistryAdapter 会按 reg.Type 路由：
+  #   - type=docker_registry -> 调用 /v2/ 健康检查
+  #   - type=harbor           -> 调用 /api/v2.0/health（需要完整 Harbor 安装）
+  # 如需带认证的仓库或完整 Harbor（含扫描/复制/项目管理），请用官方 harbor-installer
+  # 或 registry:2 + htpasswd（Linux 主机挂载 htpasswd 文件即可；Windows 挂载有兼容问题）
+  # 单独部署，然后在系统设置页把 registry 类型改为对应类型并填入 URL。
+  registry:
+    image: registry:2
+    ports:
+      - "8083:5000"               # 宿主机 8083 -> 容器 5000
+    environment:
+      REGISTRY_HTTP_ADDR: ":5000"
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registrydata:/var/lib/registry
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/v2/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ---------- 构建集成：K8s 集群（k3s） ----------
+  # k3s 单节点集群，供发布流程与 Tekton 构建引擎对接。
+  # 注意：需要 Docker 启用 privileged 模式（Docker Desktop 默认支持）。
+  k8s:
+    build:
+      context: .
+      dockerfile: Dockerfile.k3s-dev
+    privileged: true
+    cgroup: host
+    restart: unless-stopped
+    ports:
+      - "6443:6443"                 # K8s API server
+      - "30000-30099:30000-30099"   # NodePort 范围（发布服务暴露，与 entrypoint.sh --service-node-port-range 一致）
+    volumes:
+      - k8sstate:/var/lib/rancher/k3s
+      - k8sdata:/etc/vortexops
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    environment:
+      KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      # K3S_CNI 指定 CNI 插件：calico（默认，支持静态 IP 注解）| flannel（旧默认，不支持静态 IP）。
+      # 切换需重建 k8s 镜像 + 清空 k8sstate 卷。
+      K3S_CNI: calico
+    healthcheck:
+      test: ["CMD", "/bin/kubectl", "get", "nodes"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  # 一次性服务：在 kind 集群安装 Tekton Pipeline 并创建 vo-builds 命名空间。
+  # 切换 platform.build_engine=tekton 后，构建 PipelineRun 运行于此命名空间。
+  # 运行：docker compose -f deploy/docker-compose.dev.yml run --rm tekton-init
+  tekton-init:
+    image: bitnami/kubectl:latest
+    depends_on:
+      k8s:
+        condition: service_healthy
+    volumes:
+      - k8sdata:/etc/vortexops:ro
+      - ./tekton-init/install-tekton.sh:/app/install-tekton.sh:ro
+    working_dir: /app
+    entrypoint: ["sh", "/app/install-tekton.sh"]
+    environment:
+      KUBECONFIG: /etc/vortexops/admin.conf
+    restart: "no"
+
+  # 一次性服务：搜索引擎就绪后创建索引模板与当月占位索引。
+  # 运行：docker compose -f deploy/docker-compose.dev.yml run --rm es-init
+  # 复用 opensearch 镜像（自带 curl），避免额外镜像依赖。
+  es-init:
+    image: opensearchproject/opensearch:2.18.0
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_ES_URL: http://elasticsearch:9200
+    volumes:
+      - ./es-init:/app:ro
+    working_dir: /app
+    entrypoint: ["sh", "/app/apply-templates.sh"]
+    restart: "no"
+
+  # 一次性服务：注入开发用 Mock 用户（admin/admin123）。
+  # 等待 schema 迁移就绪后执行 seed SQL，幂等。
+  # 运行：docker compose -f deploy/docker-compose.dev.yml run --rm db-seed
+  # 注意：首次启动需先执行 `docker compose run --rm migrate`。
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    entrypoint: ["/app/vortexops", "migrate", "up"]
+    restart: "no"
+
+  db-seed:
+    image: pgvector/pgvector:pg16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+    volumes:
+      - ./db-seed:/app:ro
+    working_dir: /app
+    entrypoint: ["sh", "/app/apply-seed.sh"]
+    restart: "no"
+
+  # 一次性服务：自动创建默认 Jenkins/Harbor 实例并绑定系统设置。
+  # 等 apiserver 就绪后通过 REST API 调用，幂等。
+  # 运行：docker compose -f deploy/docker-compose.dev.yml run --rm integration-seed
+  integration-seed:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      apiserver:
+        condition: service_started
+    environment:
+      VORTEXOPS_API_BASE: http://apiserver:8080/api/v1
+      VORTEXOPS_ADMIN_USER: admin
+      VORTEXOPS_ADMIN_PASSWORD: admin123
+      VORTEXOPS_JENKINS_URL: http://jenkins:8080
+      VORTEXOPS_JENKINS_USER: admin
+      VORTEXOPS_JENKINS_PASSWORD: vortexops_dev
+      VORTEXOPS_HARBOR_URL: http://registry:5000
+      VORTEXOPS_HARBOR_USER: admin
+      VORTEXOPS_HARBOR_PASSWORD: vortexops_dev
+    volumes:
+      - ./db-seed/apply-integration-seed.sh:/app/apply-integration-seed.sh:ro
+    working_dir: /app
+    # 剥离 Windows CRLF，避免 Alpine sh 解析 `set -eu` 失败。
+    entrypoint: ["sh", "-c", "tr -d '\\r' < /app/apply-integration-seed.sh | sh"]
+    restart: "no"
+
+  # ---------- 容器监控：Prometheus ----------
+  # 系统变量化监控后端：默认 monitoring.prometheus_url=http://prometheus-server:9090
+  # 抓取 docker-compose 内 kind 集群的 kubelet / cAdvisor 指标。
+  # 生产环境建议在 K8s 集群内运行 kube-prometheus-stack，并通过系统设置页覆盖 URL。
+  prometheus-server:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  apiserver:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      jenkins:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      prometheus-server:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_REDIS_ADDRS: redis:6379
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      VORTEXOPS_KAFKA_BROKERS: kafka:9092
+      VORTEXOPS_S3_ENDPOINT: minio:9000
+      VORTEXOPS_S3_ACCESS_KEY: admin
+      VORTEXOPS_S3_SECRET_KEY: vortexops_dev
+      VORTEXOPS_S3_BUCKET: vortexops
+      VORTEXOPS_ES_URL: http://elasticsearch:9200
+      VORTEXOPS_SERVER_ADDR: ":8080"
+      # 构建集成：系统变量化 Jenkins/Registry/K8s 默认指向 compose 服务。
+      VORTEXOPS_JENKINS_URL: http://jenkins:8080
+      VORTEXOPS_JENKINS_USER: admin
+      VORTEXOPS_JENKINS_PASSWORD: vortexops_dev
+      VORTEXOPS_HARBOR_URL: http://registry:5000
+      VORTEXOPS_HARBOR_USER: admin
+      VORTEXOPS_HARBOR_PASSWORD: vortexops_dev
+      VORTEXOPS_K8S_API_SERVER: https://k8s:6443
+      VORTEXOPS_K8S_KUBECONFIG: /etc/vortexops/kubeconfig.yaml
+    volumes:
+      - k8sdata:/etc/vortexops:ro
+    ports:
+      - "8080:8080"
+    command: ["serve"]
+
+  syncer:
+    build:
+      context: ..
+      dockerfile: Dockerfile.syncer
+    profiles: ["full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_REDIS_ADDRS: redis:6379
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      SYNCER_SHARD_ID: "0"
+      SYNCER_SHARD_COUNT: "1"
+      # 本地 docker-compose 无 in-cluster K8s ServiceAccount，跳过 Lease 选举以单实例运行。
+      SYNCER_DISABLE_LEADER_ELECTION: "true"
+
+  # ---------- Mutating Webhook（稳定 Pod IP 注入） ----------
+  # Phase 2：Pod 创建时从 IP 池分配稳定 IP 并注入 CNI 注解。
+  # 需与 k8s 集群在同一 docker 网络（kube-apiserver 通过 https://webhook:8443/mutate 访问）。
+  # TLS 证书：开发环境自签（每次启动重新生成），CA bundle 自动推送到各集群 MutatingWebhookConfiguration。
+  # 生产环境通过 WEBHOOK_TLS_CERT_FILE/KEY_FILE/CA_FILE 提供外部签发证书。
+  webhook:
+    build:
+      context: ..
+      dockerfile: Dockerfile.webhook
+    profiles: ["full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      k8s:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      # kube-apiserver 访问 webhook 的 URL（compose 服务名 webhook，端口 8443）。
+      WEBHOOK_URL: "https://webhook:8443/mutate"
+      WEBHOOK_ADDR: ":8443"
+      # 开发环境自签证书的 SAN DNS（包含 compose 服务名 + localhost）。
+      WEBHOOK_TLS_DNS_NAMES: "webhook,localhost,vortexops-webhook,vortexops-webhook.vortexops,vortexops-webhook.vortexops.svc"
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD", "/app/vortexops-webhook", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  pipeline-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.pipeline-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_REDIS_ADDRS: redis:6379
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      VORTEXOPS_KAFKA_BROKERS: kafka:9092
+
+  ws-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile.ws-gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      VORTEXOPS_REDIS_ADDRS: redis:6379
+      VORTEXOPS_JWT_SIGNING_KEY: dev-jwt-signing-key-at-least-32-bytes-long
+      VORTEXOPS_SECURITY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      VORTEXOPS_WS_ADDR: ":8081"
+      VORTEXOPS_APP_INSTANCE_ID: ws-gateway-1
+    ports:
+      - "8081:8081"
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - apiserver
+      - ws-gateway
+    ports:
+      - "8088:80"
+    restart: unless-stopped
+
+  # ---------- JumpServer 堡垒机（sibling 服务） ----------
+  # JumpServer 官方镜像默认仅含 MySQL 驱动，故为其单独起 MySQL 容器；仅共享 Redis。
+  # VortexOps 通过 AccessKey 签名调用 JMS API 签发 SSO 连接 URL。
+  # 生产环境建议独立部署 JumpServer 集群，VortexOps 仅做统一入口与审计转发。
+  jumpserver-mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: jumpserver_dev
+      MYSQL_DATABASE: jumpserver
+      MYSQL_USER: jumpserver
+      MYSQL_PASSWORD: jumpserver_dev
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - jmsmysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pjumpserver_dev"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 18
+    restart: unless-stopped
+
+  jumpserver-core:
+    image: jumpserver/jms_core:v3.10.9
+    depends_on:
+      jumpserver-mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SECRET_KEY: jumpserver-dev-secret-key-change-in-prod
+      BOOTSTRAP_TOKEN: jumpserver-dev-bootstrap-token
+      DB_ENGINE: mysql
+      DB_HOST: jumpserver-mysql
+      DB_PORT: "3306"
+      DB_USER: jumpserver
+      DB_PASSWORD: jumpserver_dev
+      DB_NAME: jumpserver
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8070:8080"
+    volumes:
+      - jmsdata:/opt/jumpserver/data
+    restart: unless-stopped
+
+  jumpserver-koko:
+    image: jumpserver/jms_koko:v3.10.9
+    depends_on:
+      - jumpserver-core
+    environment:
+      CORE_HOST: http://jumpserver-core:8080
+      BOOTSTRAP_TOKEN: jumpserver-dev-bootstrap-token
+    ports:
+      - "2222:2222"
+    restart: unless-stopped
+
+  jumpserver-lion:
+    image: jumpserver/jms_lion:v3.10.9
+    depends_on:
+      - jumpserver-core
+    environment:
+      CORE_HOST: http://jumpserver-core:8080
+      BOOTSTRAP_TOKEN: jumpserver-dev-bootstrap-token
+    ports:
+      - "3389:3389"
+    restart: unless-stopped
+
+  jumpserver-web:
+    image: jumpserver/jms_web:v3.10.9
+    depends_on:
+      - jumpserver-core
+    environment:
+      CORE_HOST: http://jumpserver-core:8080
+    ports:
+      - "8090:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
+  esdata:
+  jenkinsdata:
+  builderdata:
+  buildworkspace:
+  registrydata:
+  k8sdata:
+  k8sstate:
+  jmsdata:
+  jmsmysqldata:
+  prometheusdata:

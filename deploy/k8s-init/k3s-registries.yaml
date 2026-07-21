@@ -1,0 +1,15 @@
+# k3s 私有仓库配置。
+# bridge 模式：compose DNS 解析 registry:5000。
+# host-net 模式：entrypoint 会覆盖为 127.0.0.1:8083（宿主机映射端口）。
+mirrors:
+  "registry:5000":
+    endpoint:
+      - "http://registry:5000"
+      - "http://127.0.0.1:8083"
+configs:
+  "registry:5000":
+    tls:
+      insecure_skip_verify: true
+  "127.0.0.1:8083":
+    tls:
+      insecure_skip_verify: true

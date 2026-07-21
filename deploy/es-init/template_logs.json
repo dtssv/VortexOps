@@ -1,0 +1,33 @@
+{
+  "_meta": { "description": "VortexOps 构建/应用日志索引模板（匹配 vortexops-build-logs-*）" },
+  "index_patterns": ["vortexops-build-logs-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.refresh_interval": "1s"
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp":   { "type": "date" },
+        "tenant_id":    { "type": "keyword" },
+        "workspace_id": { "type": "keyword" },
+        "build_id":     { "type": "keyword", "ignore_above": 64 },
+        "pipeline_id":  { "type": "keyword", "ignore_above": 64 },
+        "stage":        { "type": "keyword", "ignore_above": 64 },
+        "step":         { "type": "keyword", "ignore_above": 128 },
+        "level":        { "type": "keyword", "ignore_above": 16 },
+        "message":      { "type": "text", "analyzer": "standard" },
+        "body":         { "type": "text", "analyzer": "standard" },
+        "operation":    { "type": "keyword", "ignore_above": 64 },
+        "resource_name":{ "type": "text", "analyzer": "standard" },
+        "user_name":    { "type": "keyword", "ignore_above": 128 },
+        "stream":       { "type": "keyword", "ignore_above": 16 },
+        "line_no":      { "type": "long" },
+        "duration_ms":  { "type": "long" }
+      }
+    }
+  },
+  "priority": 200
+}

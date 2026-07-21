@@ -1,0 +1,69 @@
+# Prometheus 联邦（多 Region 集中查询）
+# 用法: kubectl apply -f manifests/monitoring/prometheus-federation.yaml -n vortexops-infra
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: vortexops-federate
+  namespace: vortexops-infra
+spec:
+  replicas: 2
+  serviceAccountName: prometheus
+  securityContext:
+    fsGroup: 2000
+    runAsUser: 1000
+    runAsNonRoot: true
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: ssd-retain
+        resources:
+          requests:
+            storage: 200Gi
+  retention: 30d
+  retentionSize: 180GiB
+  enableFeatures:
+    - exemplar-storage
+  # 联邦抓取配置：从各 Region Prometheus 拉取
+  additionalScrapeConfigs:
+    - job_name: 'federate-us-east-1'
+      honor_labels: true
+      metrics_path: '/federate'
+      params:
+        'match[]':
+          - '{__name__=~"vortexops_.*"}'
+          - '{__name__=~"up|scrape_samples_post_metric_relabeling"}'
+      static_configs:
+        - targets: ['prometheus-region-a.vortexops-infra.svc:9090']
+          labels:
+            region: 'us-east-1'
+    - job_name: 'federate-us-west-2'
+      honor_labels: true
+      metrics_path: '/federate'
+      params:
+        'match[]':
+          - '{__name__=~"vortexops_.*"}'
+      static_configs:
+        - targets: ['prometheus-region-b.vortexops-infra.svc:9090']
+          labels:
+            region: 'us-west-2'
+  resources:
+    requests: { cpu: "2", memory: "8Gi" }
+    limits:   { cpu: "4", memory: "16Gi" }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vortexops-platform
+  namespace: vortexops-infra
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: vortexops
+  endpoints:
+    - port: http-metrics
+      interval: 15s
+      path: /metrics
+  namespaceSelector:
+    matchNames:
+      - vortexops

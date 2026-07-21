@@ -1,0 +1,107 @@
+# =============================================================================
+# VortexOps 物理机部署 values（apiserver 连接外部 PG/Redis/MinIO）
+# 用法: 平台组件以 systemd 运行，但配置参数仍按 Helm values 规范组织。
+#       install-bare.sh 会读取本文件渲染环境变量到 /etc/vortexops/vortexops.env
+# =============================================================================
+# 适配规模：500-5000 应用 / 5-50 被管集群 / 物理机 3-5 台 + 依赖组件独立物理机
+# =============================================================================
+
+global:
+  imageTag: "1.0.0"
+
+# ---------- 依赖组件（独立物理机部署） ----------
+postgresql:
+  enabled: false
+  external:
+    # PgBouncer 入口（减少直连 PG 连接数）
+    host: pgbouncer.vortexops.internal
+    port: 6432
+    readReplicaHost: pg-replica.vortexops.internal
+    database: vortexops
+    username: vortexops
+    existingSecret: file:///etc/vortexops/secrets/pg-creds
+    secretKey: password
+
+redis:
+  enabled: false
+  external:
+    # Sentinel 入口，自动主从切换
+    host: redis.vortexops.internal
+    port: 6379
+    sentinel:
+      hosts:
+        - sentinel-01.vortexops.internal:26379
+        - sentinel-02.vortexops.internal:26379
+        - sentinel-03.vortexops.internal:26379
+      masterName: vortexops-redis-master
+    existingSecret: file:///etc/vortexops/secrets/redis-creds
+    secretKey: password
+
+objectStorage:
+  type: s3
+  endpoint: http://minio.vortexops.internal:9000
+  bucket: vortexops
+  existingSecret: file:///etc/vortexops/secrets/s3-creds
+  secretKeys:
+    accessKey: accessKey
+    secretKey: secretKey
+  pathStyle: true
+
+kafka:
+  enabled: false
+elasticsearch:
+  enabled: false
+
+# ---------- 平台组件 ----------
+apiserver:
+  replicas: 2                    # 在两台物理机各跑一个实例
+  config:
+    dbPoolMax: 50
+    jwtSecretRef:
+      name: file
+      key: /etc/vortexops/secrets/jwt.key
+    encryptionKeyRef:
+      name: file
+      key: /etc/vortexops/secrets/kms.key
+    serverAddr: ":8080"
+    logLevel: info
+
+syncer:
+  replicas: 1
+  config:
+    clustersShardPerInstance: 50
+    namespaceShardCount: 8
+    # 物理机方案不用 K8s Lease，改用 Redis Redlock
+    leaderElectionDriver: redis
+
+wsGateway:
+  replicas: 1
+  config:
+    maxConnectionsPerInstance: 2500
+    serverAddr: ":8081"
+
+extApiGateway:
+  replicas: 1
+
+pipelineWorker:
+  replicas: 1
+
+webhook:
+  replicas: 1
+  tls:
+    certFile: /etc/vortexops/secrets/webhook/tls.crt
+    keyFile: /etc/vortexops/secrets/webhook/tls.key
+    caFile: /etc/vortexops/secrets/webhook/ca.crt
+
+frontend:
+  replicas: 1
+  nginxConfPath: /etc/vortexops/frontend/nginx.conf
+  staticPath: /opt/vortexops/frontend/dist
+
+# ---------- 系统设置 ----------
+systemSettings:
+  workspaceCreation:
+    allowSelfCreate: true
+    maxPerUser: 5
+  cve:
+    defaultPolicy: warn

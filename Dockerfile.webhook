@@ -1,0 +1,14 @@
+# Webhook 镜像（多阶段构建，与 syncer 共用 builder 模式）
+FROM golang:1.26.4-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/webhook ./cmd/webhook
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=builder /out/webhook /app/vortexops-webhook
+EXPOSE 8443
+ENTRYPOINT ["/app/vortexops-webhook", "serve"]

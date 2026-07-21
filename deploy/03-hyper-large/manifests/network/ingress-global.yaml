@@ -1,0 +1,78 @@
+# 跨 Region 流量调度 Ingress（按 Region 权重路由 + 故障转移）
+# 用法: kubectl apply -f manifests/network/ingress-global.yaml -n vortexops
+#
+# 依赖：nginx-ingress + geoip2 + lua 脚本（或外部 GSLB）
+# 默认按 region 灰度；主 region 故障时切流到备 region
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-global
+  namespace: vortexops
+  annotations:
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # 按 geoip 路由到就近 region（默认主 region）
+      set $region "us-east-1";
+      if ($geoip_country_code ~ "^(US|CA|MX)$") { set $region "us-east-1"; }
+      if ($geoip_country_code ~ "^(JP|KR|CN|SG|AU)$") { set $region "us-west-2"; }
+      # 主 region 故障转移（健康检查探针写入 /etc/nginx/conf.d/region_health）
+      if (-f /etc/nginx/conf.d/region_a_down.flag) { set $region "us-west-2"; }
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_id"   # 负载均衡策略
+    nginx.ingress.kubernetes.io/enable-opentracing: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ "app.vortexops.io" ]
+      secretName: vortexops-tls
+  rules:
+    - host: app.vortexops.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-frontend
+                port:
+                  name: http
+    - host: api.vortexops.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-apiserver
+                port:
+                  name: http
+---
+# 跨 Region WebSocket（长连接，需 sticky session + 心跳）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-ws-global
+  namespace: vortexops
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: VORTEXOPS_WS_ROUTE
+    nginx.ingress.kubernetes.io/session-cookie-hash: sha1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/upstream-keepalive-connections: "320"
+    nginx.ingress.kubernetes.io/upstream-keepalive-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ "ws.vortexops.io" ]
+      secretName: vortexops-ws-tls
+  rules:
+    - host: ws.vortexops.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-ws-gateway
+                port:
+                  name: ws

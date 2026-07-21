@@ -1,0 +1,36 @@
+[Unit]
+Description=VortexOps API Server
+Documentation=https://github.com/vortexops/vortexops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vortexops
+Group=vortexops
+WorkingDirectory=/opt/vortexops
+EnvironmentFile=/etc/vortexops/vortexops.env
+ExecStart=/opt/vortexops/bin/vortexops serve
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vortexops-apiserver
+
+# 资源限制（ulimit）
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# 优雅退出（Drain 在飞请求）
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/vortexops/logs /var/log/vortexops
+
+[Install]
+WantedBy=multi-user.target

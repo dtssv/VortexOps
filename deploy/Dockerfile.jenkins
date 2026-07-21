@@ -1,0 +1,21 @@
+# VortexOps Jenkins 镜像：基于 lts-jdk17，加装 docker CLI（仅客户端）+ 预装构建所需插件。
+# Jenkins 容器内不运行 dockerd，docker 命令通过 DOCKER_HOST=tcp://builder:2375 远程调用独立 builder 容器。
+#
+# 实测约束：当前 lts-jdk17 镜像 plugins 目录为空（init.groovy 报 "Folder plugin not available"），
+# 故必须显式预装：cloudbees-folder（folder 创建）、workflow-aggregator（Pipeline 核心）、
+# git（git 步骤）、workflow-cps（CpsFlowDefinition）、docker-workflow（可选，本方案用 sh 调 docker）。
+FROM jenkins/jenkins:lts-jdk17
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+USER jenkins
+
+# 预装插件：用 jenkins-plugin-cli（lts 镜像自带 /usr/local/bin/jenkins-plugin-cli）。
+# --latest 与 -p 指定插件；自动解析依赖。跳过 Jenkins 启动时联网下载。
+RUN jenkins-plugin-cli --latest \
+    -p cloudbees-folder \
+    -p workflow-aggregator \
+    -p git \
+    -p configuration-as-code

@@ -1,0 +1,69 @@
+# Grafana 多 Region 数据源配置
+# 用法: kubectl apply -f manifests/monitoring/grafana-datasources.yaml -n vortexops-infra
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: vortexops-infra
+  labels:
+    grafana_datasource: "1"
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      # 主 Region Prometheus（实时）
+      - name: Prometheus-Region-A (us-east-1)
+        type: prometheus
+        access: proxy
+        url: http://prometheus-region-a.vortexops-infra.svc:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: "15s"
+
+      # 备 Region Prometheus（实时）
+      - name: Prometheus-Region-B (us-west-2)
+        type: prometheus
+        access: proxy
+        url: http://prometheus-region-b.vortexops-infra.svc:9090
+        isDefault: false
+        editable: false
+        jsonData:
+          timeInterval: "15s"
+
+      # Thanos Query（跨 Region 长期查询）
+      - name: Thanos (Long-term, Multi-Region)
+        type: prometheus
+        access: proxy
+        url: http://thanos-query.vortexops-infra.svc:9090
+        isDefault: false
+        editable: false
+        jsonData:
+          timeInterval: "30s"
+
+      # OpenSearch（审计/日志全文检索）
+      - name: OpenSearch (Audit Logs)
+        type: elasticsearch
+        access: proxy
+        url: https://opensearch.vortexops-infra.svc:9200
+        database: "vortexops-audit-*"
+        jsonData:
+          esVersion: "7.10.0"
+          timeField: "@timestamp"
+          interval: "Daily"
+          logLevelField: "level"
+          logMessageField: "message"
+
+      # Citus（PG 指标）
+      - name: PostgreSQL (Citus)
+        type: postgres
+        access: proxy
+        url: citus-coordinator.vortexops-infra.svc:5432
+        database: vortexops
+        user: vortexops
+        secureJsonData:
+          password: "CHANGE_ME_PG_PASSWORD"
+        jsonData:
+          sslmode: "disable"
+          postgresVersion: 1600

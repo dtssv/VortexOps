@@ -1,0 +1,66 @@
+# ws-gateway 会话亲和性 + Redis Pub/Sub 路由
+# 用法: kubectl apply -f manifests/ws-gateway/ws-session-affinity.yaml -n vortexops
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vortexops-ws-gateway
+  namespace: vortexops
+  annotations:
+    # nginx-ingress 会话保持（基于 cookie）
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/affinity-mode: persistent
+    nginx.ingress.kubernetes.io/session-cookie-name: VORTEXOPS_WS_ROUTE
+    nginx.ingress.kubernetes.io/session-cookie-hash: sha1
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  ports:
+    - name: ws
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: vortexops-ws-gateway
+---
+# Redis Pub/Sub 路由 ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vortexops-ws-routing
+  namespace: vortexops
+data:
+  routing.yaml: |
+    # 订阅 topic → 后端发布者映射
+    # ws-gateway 收到订阅请求后，按 topic 路由到对应后端
+    routes:
+      - topic: "release:{uuid}"
+        publisher: "apiserver"
+        channel: "ws:release"
+      - topic: "build:{uuid}"
+        publisher: "apiserver"
+        channel: "ws:build"
+      - topic: "pod:logs:{podUuid}"
+        publisher: "log-proxy"
+        channel: "ws:podlogs"
+      - topic: "group:{groupUuid}:pods"
+        publisher: "syncer"
+        channel: "ws:pods"
+
+    # 背压配置：日志流高频，需合并/采样
+    backpressure:
+      log_stream:
+        batch_window_ms: 100
+        max_batch_size: 50
+      release_progress:
+        batch_window_ms: 200
+        max_batch_size: 10
+
+    # 断线重连 + 续传
+    resumption:
+      enabled: true
+      offset_key: "ws:offset:{sessionId}"
+      max_resume_age: 300s

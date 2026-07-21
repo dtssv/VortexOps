@@ -1,0 +1,41 @@
+# NATS JetStream（轻量异步消息，3 节点集群）
+# 用法:
+#   helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+#   helm install nats nats/nats \
+#     -n vortexops-infra \
+#     -f manifests/deps/nats-jetstream.yaml
+#
+# 适配规模：M（异步审计 / 通知 / 构建事件）
+# L/XL 规模升级到 Kafka（见 03-hyper-large/manifests/kafka-cluster.yaml）
+
+nats:
+  jetstream:
+    enabled: true
+    fileStore:
+      enabled: true
+      storageClass: ssd-retain
+      size: 20Gi
+
+cluster:
+  enabled: true
+  replicas: 3
+
+# JetStream Stream / Consumer 配置（通过 nats CLI 或应用启动时创建）
+# - vortexops.audit:        审计异步落库
+# - vortexops.notification: 多渠道通知投递
+# - vortexops.build.events: 构建状态变更
+
+resources:
+  requests: { cpu: "0.5", memory: "512Mi" }
+  limits:   { cpu: "1",   memory: "1Gi" }
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# 监控
+exporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra

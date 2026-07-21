@@ -1,0 +1,72 @@
+# apiserver NetworkPolicy：仅允许 Ingress + 内部组件入站
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vortexops-apiserver-ingress
+  namespace: vortexops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vortexops-apiserver
+  policyTypes:
+    - Ingress
+  ingress:
+    # 来自 Ingress Controller 的流量
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    # 来自平台内部组件（syncer / ext-api-gw / pipeline-worker）
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: vortexops
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# 出站：apiserver 允许访问 PG / Redis / MinIO / NATS / ES / Jenkins / Harbor / 被管集群 API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vortexops-apiserver-egress
+  namespace: vortexops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vortexops-apiserver
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # 同 namespace 内组件
+    - to:
+        - podSelector: {}
+    # 依赖组件 namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vortexops-infra
+    # 被管业务集群 API Server（出站到外部 IP，需按集群 CIDR 白名单细化）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8     # 内部网段不直接出公网（按需调整）
+      ports:
+        - protocol: TCP
+          port: 6443            # K8s API Server

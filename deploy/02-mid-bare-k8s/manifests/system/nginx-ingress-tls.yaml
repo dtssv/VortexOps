@@ -1,0 +1,113 @@
+# VortexOps Ingress + TLS（cert-manager 自动签发）
+# 前置：集群已安装 nginx-ingress + cert-manager + ClusterIssuer
+# 用法: kubectl apply -f manifests/system/nginx-ingress-tls.yaml -n vortexops
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-frontend
+  namespace: vortexops
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [vortexops.internal]
+      secretName: vortexops-frontend-tls
+  rules:
+    - host: vortexops.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-frontend
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-apiserver
+  namespace: vortexops
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # SSE 长连接：关闭 buffer，增大 timeout
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.vortexops.internal]
+      secretName: vortexops-apiserver-tls
+  rules:
+    - host: api.vortexops.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-apiserver
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-ext-api
+  namespace: vortexops
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ext.vortexops.internal]
+      secretName: vortexops-ext-api-tls
+  rules:
+    - host: ext.vortexops.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-ext-api-gateway
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vortexops-ws-gateway
+  namespace: vortexops
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # WebSocket 长连接
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: vortexops-ws-gateway
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [ws.vortexops.internal]
+      secretName: vortexops-ws-tls
+  rules:
+    - host: ws.vortexops.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vortexops-ws-gateway
+                port:
+                  number: 8081

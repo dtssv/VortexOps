@@ -1,0 +1,53 @@
+# PgBouncer 连接池（汇聚 apiserver/syncer 连接，减少 PG 直连数）
+# 用法:
+#   helm repo add bitnami https://charts.bitnami.com/bitnami
+#   helm install pgbouncer bitnami/pgbouncer \
+#     -n vortexops-infra \
+#     -f manifests/deps/pgbouncer.yaml
+#
+# 平台 dbPoolMax=50，apiserver 2 副本 = 100 连接 + syncer 2×30=60，共 160。
+# PgBouncer 池化后实际到 PG 的连接 ≤ 100（transaction 模式）。
+
+replicaCount: 2
+
+postgresql:
+  host: vortexops-pg-postgresql
+  port: 5432
+  database: vortexops
+  username: vortexops
+  password: "CHANGE_ME_PG_PASSWORD"
+  existingSecret: ""           # 生产用 pg-creds
+  secretKey: password
+
+pgbouncer:
+  poolMode: transaction
+  maxClientConn: 1000
+  defaultPoolSize: 50
+  reservePoolSize: 10
+  reservePoolTimeout: 3
+  queryWaitTimeout: 120
+  serverResetQuery: DISCARD ALL
+
+resources:
+  requests: { cpu: "0.25", memory: "128Mi" }
+  limits:   { cpu: "0.5",  memory: "256Mi" }
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPU: 70
+
+service:
+  type: ClusterIP
+  port: 6432
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra
+
+pdb:
+  create: true
+  minAvailable: 1

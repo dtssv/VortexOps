@@ -1,0 +1,51 @@
+# ext-api-gw NetworkPolicy：独立入口，仅允许 Ingress 入站，出站到 apiserver / Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vortexops-ext-api-ingress
+  namespace: vortexops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vortexops-ext-api-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 仅 Ingress Controller 可访问（独立域名 ext.vortexops.internal）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # 内部 apiserver（验证 token 后转发）
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vortexops-apiserver
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Redis（限流计数）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vortexops-infra
+      ports:
+        - protocol: TCP
+          port: 6379

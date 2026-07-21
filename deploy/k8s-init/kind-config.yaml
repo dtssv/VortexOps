@@ -1,0 +1,241 @@
+# VortexOps K8s 集群配置（kind 单节点 control-plane）
+# 用于 docker-compose 中 kindest/node 容器初始化 K8s 集群。
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: vortexops
+nodes:
+  - role: control-plane
+    # 暴露 NodePort 范围到宿主机：与 docker-compose k3s 的 --service-node-port-range 对齐
+    # （30000-30099）。分组网络模式设为 nodeport 时，分配到的端口必然在此范围内，
+    # 可通过 宿主机IP:NodePort 直接访问。
+    # 注意：kind 的 extraPortMappings 逐条映射，这里用 jq/脚本生成的 100 条；
+    # 若手改请保持 containerPort == hostPort，且落在 service-node-port-range 内。
+    extraPortMappings:
+      - containerPort: 30000
+        hostPort: 30000
+      - containerPort: 30001
+        hostPort: 30001
+      - containerPort: 30002
+        hostPort: 30002
+      - containerPort: 30003
+        hostPort: 30003
+      - containerPort: 30004
+        hostPort: 30004
+      - containerPort: 30005
+        hostPort: 30005
+      - containerPort: 30006
+        hostPort: 30006
+      - containerPort: 30007
+        hostPort: 30007
+      - containerPort: 30008
+        hostPort: 30008
+      - containerPort: 30009
+        hostPort: 30009
+      - containerPort: 30010
+        hostPort: 30010
+      - containerPort: 30011
+        hostPort: 30011
+      - containerPort: 30012
+        hostPort: 30012
+      - containerPort: 30013
+        hostPort: 30013
+      - containerPort: 30014
+        hostPort: 30014
+      - containerPort: 30015
+        hostPort: 30015
+      - containerPort: 30016
+        hostPort: 30016
+      - containerPort: 30017
+        hostPort: 30017
+      - containerPort: 30018
+        hostPort: 30018
+      - containerPort: 30019
+        hostPort: 30019
+      - containerPort: 30020
+        hostPort: 30020
+      - containerPort: 30021
+        hostPort: 30021
+      - containerPort: 30022
+        hostPort: 30022
+      - containerPort: 30023
+        hostPort: 30023
+      - containerPort: 30024
+        hostPort: 30024
+      - containerPort: 30025
+        hostPort: 30025
+      - containerPort: 30026
+        hostPort: 30026
+      - containerPort: 30027
+        hostPort: 30027
+      - containerPort: 30028
+        hostPort: 30028
+      - containerPort: 30029
+        hostPort: 30029
+      - containerPort: 30030
+        hostPort: 30030
+      - containerPort: 30031
+        hostPort: 30031
+      - containerPort: 30032
+        hostPort: 30032
+      - containerPort: 30033
+        hostPort: 30033
+      - containerPort: 30034
+        hostPort: 30034
+      - containerPort: 30035
+        hostPort: 30035
+      - containerPort: 30036
+        hostPort: 30036
+      - containerPort: 30037
+        hostPort: 30037
+      - containerPort: 30038
+        hostPort: 30038
+      - containerPort: 30039
+        hostPort: 30039
+      - containerPort: 30040
+        hostPort: 30040
+      - containerPort: 30041
+        hostPort: 30041
+      - containerPort: 30042
+        hostPort: 30042
+      - containerPort: 30043
+        hostPort: 30043
+      - containerPort: 30044
+        hostPort: 30044
+      - containerPort: 30045
+        hostPort: 30045
+      - containerPort: 30046
+        hostPort: 30046
+      - containerPort: 30047
+        hostPort: 30047
+      - containerPort: 30048
+        hostPort: 30048
+      - containerPort: 30049
+        hostPort: 30049
+      - containerPort: 30050
+        hostPort: 30050
+      - containerPort: 30051
+        hostPort: 30051
+      - containerPort: 30052
+        hostPort: 30052
+      - containerPort: 30053
+        hostPort: 30053
+      - containerPort: 30054
+        hostPort: 30054
+      - containerPort: 30055
+        hostPort: 30055
+      - containerPort: 30056
+        hostPort: 30056
+      - containerPort: 30057
+        hostPort: 30057
+      - containerPort: 30058
+        hostPort: 30058
+      - containerPort: 30059
+        hostPort: 30059
+      - containerPort: 30060
+        hostPort: 30060
+      - containerPort: 30061
+        hostPort: 30061
+      - containerPort: 30062
+        hostPort: 30062
+      - containerPort: 30063
+        hostPort: 30063
+      - containerPort: 30064
+        hostPort: 30064
+      - containerPort: 30065
+        hostPort: 30065
+      - containerPort: 30066
+        hostPort: 30066
+      - containerPort: 30067
+        hostPort: 30067
+      - containerPort: 30068
+        hostPort: 30068
+      - containerPort: 30069
+        hostPort: 30069
+      - containerPort: 30070
+        hostPort: 30070
+      - containerPort: 30071
+        hostPort: 30071
+      - containerPort: 30072
+        hostPort: 30072
+      - containerPort: 30073
+        hostPort: 30073
+      - containerPort: 30074
+        hostPort: 30074
+      - containerPort: 30075
+        hostPort: 30075
+      - containerPort: 30076
+        hostPort: 30076
+      - containerPort: 30077
+        hostPort: 30077
+      - containerPort: 30078
+        hostPort: 30078
+      - containerPort: 30079
+        hostPort: 30079
+      - containerPort: 30080
+        hostPort: 30080
+      - containerPort: 30081
+        hostPort: 30081
+      - containerPort: 30082
+        hostPort: 30082
+      - containerPort: 30083
+        hostPort: 30083
+      - containerPort: 30084
+        hostPort: 30084
+      - containerPort: 30085
+        hostPort: 30085
+      - containerPort: 30086
+        hostPort: 30086
+      - containerPort: 30087
+        hostPort: 30087
+      - containerPort: 30088
+        hostPort: 30088
+      - containerPort: 30089
+        hostPort: 30089
+      - containerPort: 30090
+        hostPort: 30090
+      - containerPort: 30091
+        hostPort: 30091
+      - containerPort: 30092
+        hostPort: 30092
+      - containerPort: 30093
+        hostPort: 30093
+      - containerPort: 30094
+        hostPort: 30094
+      - containerPort: 30095
+        hostPort: 30095
+      - containerPort: 30096
+        hostPort: 30096
+      - containerPort: 30097
+        hostPort: 30097
+      - containerPort: 30098
+        hostPort: 30098
+      - containerPort: 30099
+        hostPort: 30099
+networking:
+  apiServerAddress: 0.0.0.0
+  apiServerPort: 6443
+kubeadmConfigPatches:
+  # 限制 service-node-port-range 与 extraPortMappings 一致（30000-30099），
+  # 确保分组 nodeport 模式分配到的端口必然在宿主机映射范围内。
+  - |-
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+        service-node-port-range: 30000-30099
+      certSANs:
+        - host.docker.internal
+        - localhost
+        - 127.0.0.1
+containerdConfigPatches:
+  # 开启 insecure registry（允许从 Harbor 拉取镜像）
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor-core:8080"]
+      endpoint = ["http://harbor-core:8080"]
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor-core:8080".auth]
+      username = "admin"
+      password = "Harbor12345"
+  # 开发环境 registry（compose 内 registry:5000，宿主机 8083）。
+  # kind 节点通过 host.docker.internal:8083 拉取 VortexOps 构建推送的镜像。
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."host.docker.internal:8083"]
+      endpoint = ["http://host.docker.internal:8083"]

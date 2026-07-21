@@ -1,0 +1,70 @@
+# syncer NetworkPolicy：出站到所有被管集群 API Server（按 CIDR 白名单）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vortexops-syncer-egress
+  namespace: vortexops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vortexops-syncer
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 仅平台内部组件与监控抓取
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: vortexops
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vortexops-infra
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080     # syncer 指标端点
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # PostgreSQL（元数据）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vortexops-infra
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6432     # PgBouncer
+    # Redis（缓存 / 锁 / Pub/Sub）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vortexops-infra
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379    # Sentinel
+    # 被管业务集群 API Server（按实际 CIDR 列出，禁止 0.0.0.0/0）
+    # 示例：被管集群 API Server 段 10.10.0.0/16 / 10.20.0.0/16
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.0/16
+        - ipBlock:
+            cidr: 10.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443       # log-proxy (HTTPS)

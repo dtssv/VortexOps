@@ -1,0 +1,35 @@
+# 依赖与构建产物
+# 注意：不能用 `**/build/`，会误删 internal/domain/build 源码包。
+**/node_modules/
+**/dist/
+backend/bin/
+backend/dist/
+build/
+
+# 本地开发文件
+**/.env
+**/.env.*
+**/*.local
+
+# Git
+.git
+.gitignore
+.github
+
+# 文档与设计稿（镜像内不需要）
+docs/
+**/*.md
+LICENSE
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 测试
+**/*_test.go
+**/testdata/
+
+# 操作系统
+.DS_Store
+Thumbs.db

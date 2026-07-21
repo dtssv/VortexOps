@@ -1,0 +1,153 @@
+# 全量备份策略（跨 Region 异步备份到对象存储）
+# 用法: kubectl apply -f manifests/dr/backup-schedule.yaml -n vortexops-infra
+---
+# PostgreSQL 定时备份（pg_dump 全量 + WAL 增量）
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup-full
+  namespace: vortexops-infra
+spec:
+  schedule: "0 2 * * *"   # 每天 02:00 全量备份
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-backup
+              image: postgres:16.4-alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="vortexops-${TS}.dump"
+
+                  echo "[backup] 开始全量备份: ${BACKUP_FILE}"
+                  PGPASSWORD=${PG_PASSWORD} pg_dump \
+                    -h ${PG_HOST} \
+                    -U ${PG_USER} \
+                    -d ${PG_DB} \
+                    -F c \
+                    -Z 6 \
+                    -f /backup/${BACKUP_FILE}
+
+                  # 上传到对象存储（跨 Region 异步复制）
+                  aws s3 cp /backup/${BACKUP_FILE} \
+                    s3://vortexops-pg-backup/full/${BACKUP_FILE} \
+                    --endpoint-url ${S3_ENDPOINT}
+
+                  # 清理 30 天前的备份
+                  aws s3 ls s3://vortexops-pg-backup/full/ \
+                    --endpoint-url ${S3_ENDPOINT} | \
+                    awk '$1 < "'$(date -d '30 days ago' +%Y-%m-%d)'" {print $4}' | \
+                    xargs -I {} aws s3 rm s3://vortexops-pg-backup/full/{} \
+                      --endpoint-url ${S3_ENDPOINT}
+
+                  echo "[backup] 完成: ${BACKUP_FILE}"
+              env:
+                - name: PG_HOST
+                  value: "citus-coordinator.vortexops-infra.svc"
+                - name: PG_USER
+                  value: "vortexops"
+                - name: PG_DB
+                  value: "vortexops"
+                - name: PG_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: vortexops-db-creds
+                      key: password
+                - name: S3_ENDPOINT
+                  value: "https://s3.us-east-1.vortexops.io"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: accessKey
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: secretKey
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              emptyDir: {}
+---
+# Redis RDB 定时备份
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-backup-rdb
+  namespace: vortexops-infra
+spec:
+  schedule: "0 */6 * * *"   # 每 6 小时备份一次
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: redis-backup
+              image: redis:7.4-alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_FILE="redis-${TS}.rdb"
+
+                  echo "[backup] 触发 BGSAVE"
+                  redis-cli -h ${REDIS_HOST} -p 6379 -a ${REDIS_PASSWORD} BGSAVE
+                  # 等待 BGSAVE 完成
+                  while [ "$(redis-cli -h ${REDIS_HOST} -p 6379 -a ${REDIS_PASSWORD} \
+                    LASTSAVE)" = "${LASTSAVE_BEFORE}" ]; do sleep 2; done
+
+                  # 从持久化目录拷贝 RDB 文件（需通过 PVC 挂载）
+                  cp /data/dump.rdb /backup/${BACKUP_FILE}
+
+                  aws s3 cp /backup/${BACKUP_FILE} \
+                    s3://vortexops-redis-backup/${BACKUP_FILE} \
+                    --endpoint-url ${S3_ENDPOINT}
+              env:
+                - name: REDIS_HOST
+                  value: "redis-cluster.vortexops-infra.svc"
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-creds
+                      key: password
+                - name: S3_ENDPOINT
+                  value: "https://s3.us-east-1.vortexops.io"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: accessKey
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: secretKey
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              emptyDir: {}
+---
+# 灾备演练（季度执行）
+# - 从备份恢复到独立 namespace 验证数据完整性
+# - 模拟主 region 失联，触发 DNS 切流
+# - 验证应用在备 region 可正常服务

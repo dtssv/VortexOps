@@ -1,0 +1,4 @@
+deploy/k8s-init/*.sh text eol=lf
+deploy/db-seed/*.sh text eol=lf
+deploy/jenkins-init/* text eol=lf
+deploy/export-kubeconfig.sh text eol=lf

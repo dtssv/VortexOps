@@ -1,0 +1,83 @@
+# syncer 分片主选举 K8s Lease（每个 namespace shard 一个 Lease）
+# 用法: kubectl apply -f manifests/syncer-shard/syncer-lease.yaml -n vortexops
+#
+# 实际部署时由 syncer 启动脚本根据 shard_count 自动创建 64 个 Lease。
+# 这里给出模板示例（shard-0 ~ shard-63），生产用 Job 批量生成。
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: vortexops-syncer-shard-0
+  namespace: vortexops
+spec:
+  holderIdentity: ""
+  leaseDurationSeconds: 30
+  acquireTime: null
+  renewTime: null
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: vortexops-syncer-shard-1
+  namespace: vortexops
+spec:
+  holderIdentity: ""
+  leaseDurationSeconds: 30
+  acquireTime: null
+  renewTime: null
+---
+# ... 共 64 个 Lease（shard-0 ~ shard-63）
+# 实际部署用脚本批量生成：
+#   for i in $(seq 0 63); do
+#     envsubst < lease-template.yaml | kubectl apply -f -
+#   done
+---
+# syncer Pod 读取 SHARD_ID 环境变量（StatefulSet 序号 % shard_count）
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vortexops-syncer
+  namespace: vortexops
+spec:
+  serviceName: vortexops-syncer
+  replicas: 20
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vortexops-syncer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vortexops-syncer
+    spec:
+      serviceAccountName: vortexops-syncer
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: syncer
+          image: registry.vortexops.io/vortexops/syncer:1.0.0
+          env:
+            - name: SHARD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name    # pod 名解析序号
+            - name: SHARD_COUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: vortexops-syncer-shard-config
+                  key: shard_count
+            - name: SYNCER_LEADER_ELECTION
+              value: "true"
+            - name: SYNCER_LEASE_NAME_PREFIX
+              value: "vortexops-syncer-shard-"
+          envFrom:
+            - secretRef:
+                name: vortexops-env
+          resources:
+            requests: { cpu: "1", memory: "2Gi" }
+            limits:   { cpu: "2", memory: "4Gi" }
+          volumeMounts:
+            - name: shard-config
+              mountPath: /etc/vortexops/syncer
+      volumes:
+        - name: shard-config
+          configMap:
+            name: vortexops-syncer-shard-config

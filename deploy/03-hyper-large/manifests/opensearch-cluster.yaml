@@ -1,0 +1,75 @@
+# OpenSearch 集群（6 数据节点 + 3 协调节点，ILM 冷热分层）
+# 用法:
+#   helm repo add opensearch https://opensearch-project.github.io/helm-charts/
+#   helm install opensearch opensearch/opensearch \
+#     -n vortexops-infra \
+#     -f manifests/opensearch-cluster.yaml
+#
+# 适配规模：XL（审计/日志全文索引）
+# 替代 02 层的 3 节点 OpenSearch
+
+clusterName: vortexops-xl
+
+# 节点角色分离：coordinator 不存数据，data 不做协调
+singleNode: false
+
+# 协调节点（3 副本，无数据）
+coordinating:
+  replicas: 3
+  roles:
+    - cluster_manager
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits:   { cpu: "4", memory: "8Gi" }
+  persistence:
+    enabled: false
+
+# 数据节点（6 副本）
+data:
+  replicas: 6
+  roles:
+    - data
+    - ingest
+  resources:
+    requests: { cpu: "4", memory: "16Gi" }
+    limits:   { cpu: "8", memory: "32Gi" }
+  persistence:
+    enabled: true
+    storageClass: ssd
+    size: 500Gi
+  extraEnvs:
+    - name: OPENSEARCH_JAVA_OPTS
+      value: "-Xms12g -Xmx12g"
+
+# 热温冷分层（通过 ILM policy 实现）
+# - hot:  最近 7 天，SSD，3 副本
+# - warm: 7-30 天，HDD，1 副本
+# - cold: 30+ 天，对象存储（Searchable Snapshots）
+
+extraEnvs:
+  - name: DISABLE_SECURITY_PLUGIN
+    value: "true"
+  - name: cluster.routing.allocation.disk.threshold_enabled
+    value: "true"
+  - name: cluster.routing.allocation.disk.watermark.low
+    value: "85%"
+  - name: cluster.routing.allocation.disk.watermark.high
+    value: "90%"
+  - name: cluster.routing.allocation.disk.watermark.flood_stage
+    value: "95%"
+
+# 索引模板（自动应用到匹配模式的索引）
+# 通过 es-init Job 或 OpenSearch API 注入：
+# - vortexops-audit-*:        2 年保留，按月滚动
+# - vortexops-build-logs-*:   30 天热 → 归档 → 删除
+# - vortexops-apps-*:         实时，1 副本
+# - vortexops-pipeline-*:     1 年保留
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# 监控
+plugins:
+  observability:
+    enabled: true

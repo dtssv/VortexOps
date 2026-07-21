@@ -1,0 +1,143 @@
+# Thanos 长期存储（跨 Region 集中查询历史指标）
+# 用法: kubectl apply -f manifests/monitoring/thanos.yaml -n vortexops-infra
+#
+# 组件：Receive（写入）+ Store Gateway（查询）+ Compactor（降采样）
+# 对象存储：MinIO / S3（指标长期存储，PB 级）
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-receive
+  namespace: vortexops-infra
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: thanos-receive
+  template:
+    metadata:
+      labels:
+        app: thanos-receive
+    spec:
+      containers:
+        - name: thanos
+          image: thanosio/thanos:v0.35.0
+          args:
+            - receive
+            - --tsdb.path=/var/thanos/receive
+            - --remote-write.address=0.0.0.0:19291
+            - --label=receive_replica="$(POD_NAME)"
+            - --objstore.config-file=/etc/thanos/objstore.yaml
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: remote-write
+              containerPort: 19291
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/receive
+            - name: objstore-config
+              mountPath: /etc/thanos
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: objstore-config
+          secret:
+            name: thanos-objstore-config
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: thanos-objstore-config
+  namespace: vortexops-infra
+type: Opaque
+stringData:
+  objstore.yaml: |
+    type: S3
+    config:
+      bucket: vortexops-thanos
+      endpoint: minio.vortexops-infra.svc:9000
+      insecure: true
+      access_key: admin
+      secret_key: CHANGE_ME_S3_SECRET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-store
+  namespace: vortexops-infra
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: thanos-store
+  template:
+    metadata:
+      labels:
+        app: thanos-store
+    spec:
+      containers:
+        - name: thanos
+          image: thanosio/thanos:v0.35.0
+          args:
+            - store
+            - --data-dir=/var/thanos/store
+            - --objstore.config-file=/etc/thanos/objstore.yaml
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/store
+            - name: objstore-config
+              mountPath: /etc/thanos
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: objstore-config
+          secret:
+            name: thanos-objstore-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-compactor
+  namespace: vortexops-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: thanos-compactor
+  template:
+    metadata:
+      labels:
+        app: thanos-compactor
+    spec:
+      containers:
+        - name: thanos
+          image: thanosio/thanos:v0.35.0
+          args:
+            - compact
+            - --data-dir=/var/thanos/compact
+            - --objstore.config-file=/etc/thanos/objstore.yaml
+            - --retention.resolution-raw=30d
+            - --retention.resolution-5m=180d
+            - --retention.resolution-1h=365d
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/compact
+            - name: objstore-config
+              mountPath: /etc/thanos
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: objstore-config
+          secret:
+            name: thanos-objstore-config

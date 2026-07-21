@@ -1,0 +1,32 @@
+[Unit]
+Description=VortexOps K8s Syncer (Informer / state sync)
+Documentation=https://github.com/vortexops/vortexops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vortexops
+Group=vortexops
+WorkingDirectory=/opt/vortexops
+EnvironmentFile=/etc/vortexops/vortexops.env
+ExecStart=/opt/vortexops/bin/vortexops-syncer serve
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vortexops-syncer
+
+LimitNOFILE=131072      # Informer Watch 长连接
+LimitNPROC=65536
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/vortexops/logs
+
+[Install]
+WantedBy=multi-user.target

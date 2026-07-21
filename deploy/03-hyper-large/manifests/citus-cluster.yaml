@@ -1,0 +1,92 @@
+# Citus 分布式 PostgreSQL 集群（8 worker + 2 coordinator HA）
+# 用法:
+#   helm repo add citusdata https://charts.citusdata.com
+#   helm install vortexops-citus citusdata/citus \
+#     -n vortexops-infra \
+#     -f manifests/citus-cluster.yaml
+#
+# 适配规模：XL（10万+应用）
+# 分片键：workspace_id（应用层 schema 已落实）
+# 替代 02 层的 PG 主从
+
+coordinator:
+  replicas: 2
+  resources:
+    requests: { cpu: "4", memory: "8Gi" }
+    limits:   { cpu: "8", memory: "16Gi" }
+  persistence:
+    enabled: true
+    storageClass: nvme-retain
+    size: 500Gi
+  extendedConfiguration: |
+    shared_preload_libraries = 'citus,vector,pg_trgm'
+    max_connections = 300
+    shared_buffers = 4GB
+    effective_cache_size = 12GB
+    work_mem = 64MB
+    citus.max_shared_pool_size = 1000
+    citus.max_adaptive_executor_pool_size = 1000
+    citus.task_assignment_policy = 'round-robin'
+    citus.enable_repartition_joins = on
+
+worker:
+  replicas: 8
+  resources:
+    requests: { cpu: "4", memory: "16Gi" }
+    limits:   { cpu: "8", memory: "32Gi" }
+  persistence:
+    enabled: true
+    storageClass: nvme-retain
+    size: 1Ti
+  extendedConfiguration: |
+    shared_preload_libraries = 'citus,vector,pg_trgm'
+    max_connections = 200
+    shared_buffers = 8GB
+    effective_cache_size = 24GB
+    work_mem = 128MB
+
+# HA：Patroni 管理主从切换
+patroni:
+  enabled: true
+  replicaCount: 1          # 每 coordinator 1 个 standby
+  failover:
+    automatic: true
+    timeout: 30s
+
+# 读副本（异步复制，承载列表 / 详情读流量）
+readReplicas:
+  replicaCount: 4
+  resources:
+    requests: { cpu: "2", memory: "8Gi" }
+    limits:   { cpu: "4", memory: "16Gi" }
+  persistence:
+    enabled: true
+    storageClass: nvme-retain
+    size: 500Gi
+
+# 备份：coordinator + worker 并行 pg_dump
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  storage:
+    s3:
+      endpoint: http://minio.vortexops-infra.svc:9000
+      bucket: vortexops-backups
+      path: citus/$(date +%Y%m%d)
+
+# 监控
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra
+
+# 分片配置（应用层执行 create_distributed_table，详见 enable-citus-sharding.sh）
+# 分片键：
+#   applications / groups / builds / releases / configs / images → workspace_id
+#   audit_logs / activity_feeds → workspace_id + 按月二级分区
+#   release_events → release_id hash
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

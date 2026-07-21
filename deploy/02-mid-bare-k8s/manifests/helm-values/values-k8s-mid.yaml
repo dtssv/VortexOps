@@ -1,0 +1,177 @@
+# =============================================================================
+# VortexOps 中型 K8s 部署 values（生产）
+# 用法:
+#   helm upgrade --install vortexops ../../helm \
+#     -n vortexops --create-namespace \
+#     -f manifests/helm-values/values-k8s-mid.yaml \
+#     --set image.tag=1.0.0
+# =============================================================================
+# 适配规模：500-5000 应用 / 5-50 被管集群 / 500-5000 在线 WS
+# 依赖组件（PG 主从 / Redis Sentinel / MinIO 分布式 / NATS / OpenSearch）需先在
+# vortexops-infra namespace 部署，连接串见下方 external 段。
+# =============================================================================
+
+global:
+  imageRegistry: registry.vortexops.io
+  imageTag: "1.0.0"
+  imagePullSecrets:
+    - name: registry-creds
+
+# ---------- 依赖组件（外部托管，不在平台 Chart 内部署） ----------
+postgresql:
+  enabled: false
+  external:
+    host: vortexops-pg-postgresql.vortexops-infra.svc
+    port: 5432
+    database: vortexops
+    username: vortexops
+    existingSecret: pg-creds
+    secretKey: password
+    # 走 PgBouncer 时改为 pgbouncer.vortexops-infra.svc:6432
+    # 走读副本时配置 readReplicaHost
+
+redis:
+  enabled: false
+  external:
+    host: vortexops-redis-master.vortexops-infra.svc
+    port: 6379
+    existingSecret: redis-creds
+    secretKey: password
+    # Sentinel 模式下配置 sentinel.hosts: ["sentinel-0", "sentinel-1", "sentinel-2"]
+    # sentinel.masterName: vortexops-redis-master
+
+objectStorage:
+  type: s3
+  endpoint: http://minio.vortexops-infra.svc:9000
+  bucket: vortexops
+  region: us-east-1
+  existingSecret: s3-creds
+  secretKeys:
+    accessKey: accessKey
+    secretKey: secretKey
+  pathStyle: true   # MinIO 必须开启
+
+kafka:
+  enabled: false    # M 规模可选 NATS，不强制 Kafka
+  bootstrapServers: ""
+
+elasticsearch:
+  enabled: false    # M 规模可选
+  url: ""
+
+# ---------- 平台组件 ----------
+apiserver:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPU: 70
+  config:
+    dbPoolMax: 50
+    jwtSecretRef:
+      name: jwt-secret
+      key: key
+    encryptionKeyRef:
+      name: kms-key
+      key: key
+  resources:
+    requests:
+      cpu: "1"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  podDisruptionBudget:
+    minAvailable: 1
+
+syncer:
+  replicas: 2
+  config:
+    clustersShardPerInstance: 50
+    namespaceShardCount: 8
+    leaderElectionLeaseName: vortexops-syncer-lease
+  resources:
+    requests: { cpu: "1", memory: "1Gi" }
+    limits:   { cpu: "2", memory: "2Gi" }
+
+wsGateway:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPU: 70
+  config:
+    maxConnectionsPerInstance: 2500
+  resources:
+    requests: { cpu: "0.5", memory: "1Gi" }
+    limits:   { cpu: "1",   memory: "2Gi" }
+
+extApiGateway:
+  replicas: 2
+  resources:
+    requests: { cpu: "0.25", memory: "256Mi" }
+    limits:   { cpu: "0.5",  memory: "512Mi" }
+
+pipelineWorker:
+  replicas: 2
+  resources:
+    requests: { cpu: "0.5", memory: "512Mi" }
+    limits:   { cpu: "1",   memory: "1Gi" }
+
+webhook:
+  replicas: 2
+  # 生产使用外部签发的 TLS 证书（cert-manager + 企业 CA）
+  tls:
+    certFile: /etc/vortexops/tls/tls.crt
+    keyFile: /etc/vortexops/tls/tls.key
+    caFile: /etc/vortexops/tls/ca.crt
+  resources:
+    requests: { cpu: "0.25", memory: "128Mi" }
+    limits:   { cpu: "0.5",  memory: "256Mi" }
+
+frontend:
+  replicas: 2
+  resources:
+    requests: { cpu: "0.1",  memory: "64Mi" }
+    limits:   { cpu: "0.25", memory: "128Mi" }
+
+# ---------- Ingress ----------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: vortexops.internal
+      service: frontend
+      port: 80
+    - host: api.vortexops.internal
+      service: apiserver
+      port: 8080
+    - host: ext.vortexops.internal
+      service: ext-api-gateway
+      port: 8080
+    - host: ws.vortexops.internal
+      service: ws-gateway
+      port: 8081
+      websocket: true
+  tls:
+    - secretName: vortexops-tls
+      hosts:
+        - vortexops.internal
+        - api.vortexops.internal
+        - ext.vortexops.internal
+        - ws.vortexops.internal
+
+# ---------- 系统设置 ----------
+systemSettings:
+  workspaceCreation:
+    allowSelfCreate: true
+    maxPerUser: 5
+  cve:
+    defaultPolicy: warn

@@ -1,0 +1,55 @@
+# Redis Cluster（12 节点：6 主 6 从）
+# 用法:
+#   helm repo add bitnami https://charts.bitnami.com/bitnami
+#   helm install vortexops-redis bitnami/redis-cluster \
+#     -n vortexops-infra \
+#     -f manifests/redis-cluster.yaml
+#
+# 适配规模：XL（Pod 缓存按 cluster_id 分片）
+# 替代 02 层的 Sentinel 高可用
+
+cluster:
+  nodes: 12              # 6 主 + 6 从
+  replicas: 1            # 每主 1 从
+  externalAccess:
+    enabled: false
+
+redis:
+  password: "CHANGE_ME_REDIS_PASSWORD"
+  existingSecret: ""     # 生产用 redis-creds
+  useAOFPersistence: true
+  config:
+    maxmemory-policy: "allkeys-lru"
+    maxmemory: "6gb"     # 每分片上限，留余量
+    appendonly: "yes"
+    appendfsync: "everysec"
+    cluster-node-timeout: 5000
+
+persistence:
+  enabled: true
+  storageClass: ssd-retain
+  size: 50Gi
+
+resources:
+  requests: { cpu: "1",   memory: "4Gi" }
+  limits:   { cpu: "2",   memory: "8Gi" }
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra
+
+# Pod 缓存分片 hash tag：
+#   rt:pod:{clusterId}:{namespace}:{podName}  → 按 clusterId 分片
+#   rt:ip:{clusterId}:{podIP}                  → 与 Pod 同分片
+#   rt:group:{clusterId}:...                   → 同 clusterId 落同分片（便于空间内聚合）
+# 这样同一 clusterId 的缓存 key 落在同一分片，减少跨分片操作。
+
+# 限流 / 锁 key：
+#   lock:release:{groupUuid}   → 全局分布，不按 clusterId 分片（用 hash tag {} 强制分散）
+#   ratelimit:{userId}:{api}   → 按 userId 分散

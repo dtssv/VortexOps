@@ -1,0 +1,12 @@
+FROM golang:1.26.4-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/pipeline-worker ./cmd/pipeline-worker
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=builder /out/pipeline-worker /app/pipeline-worker
+ENTRYPOINT ["/app/pipeline-worker"]

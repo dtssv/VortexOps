@@ -1,0 +1,80 @@
+# Redis 跨 Region 复制（主→备，单向异步）
+# 用法: kubectl apply -f manifests/dr/redis-cross-region.yaml -n vortexops-infra
+#
+# 注意：Redis Cluster 不原生支持跨 Region 复制
+# 方案：replicaof（主从）+ keyspace notification 异步同步
+# 适合于缓存场景（部分数据丢失可接受）；强一致数据走 PG
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-standby-config
+  namespace: vortexops-infra
+data:
+  redis.conf: |
+    # 备 Region Redis 作为主 Region 的从
+    replicaof redis-primary.us-east-1.vortexops.io 6379
+    # 只读
+    replica-read-only yes
+    # 复制凭据
+    masterauth CHANGE_ME_REDIS_PASSWORD
+    requirepass CHANGE_ME_REDIS_PASSWORD
+    # 持久化（备 region 开启 AOF，故障切换后数据不丢）
+    appendonly yes
+    appendfsync everysec
+    # 内存策略
+    maxmemory 8gb
+    maxmemory-policy allkeys-lru
+    # 故障切换时提升为主（手动执行）：
+    #   redis-cli -a CHANGE_ME_REDIS_PASSWORD REPLICAOF NO ONE
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-standby
+  namespace: vortexops-infra
+spec:
+  serviceName: redis-standby
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-standby
+  template:
+    metadata:
+      labels:
+        app: redis-standby
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          command: ["redis-server", "/etc/redis/redis.conf"]
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: config
+              mountPath: /etc/redis
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: ssd-retain
+        resources:
+          requests:
+            storage: 50Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: config
+      spec:
+        accessModes: ["ReadWriteMany"]
+        resources:
+          requests:
+            storage: 1Mi
+---
+# MinIO 跨 Region 复制（站点复制 Server-Side Copy）
+# 在备 Region MinIO 控制台配置 replication rule：
+#   - Source: vortexops bucket (us-east-1)
+#   - Destination: vortexops bucket (us-west-2)
+#   - 同步删除、标签、元数据
+#   - RPO < 1 分钟（取决于对象大小）

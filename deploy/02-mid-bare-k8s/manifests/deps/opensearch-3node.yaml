@@ -1,0 +1,60 @@
+# OpenSearch 3 节点集群（可选，M 规模起用于全局搜索）
+# 用法:
+#   helm repo add opensearch https://opensearch-project.github.io/helm-charts/
+#   helm install opensearch opensearch/opensearch \
+#     -n vortexops-infra \
+#     -f manifests/deps/opensearch-3node.yaml
+#
+# 适配规模：M（审计/日志全文检索）
+# OpenSearch 替代 ES 8.x（SSPL 非开源），兼容 ES 7.x REST API
+
+clusterName: vortexops
+
+# 开发环境单节点；生产 3 节点
+singleNode: false
+
+# 3 节点：均可选举为 master + 同时作为 data 节点
+nodeGroup: "main"
+replicas: 3
+roles:
+  - cluster_manager
+  - data
+  - ingest
+
+# 生产关闭安全插件或在 ingress 层做 TLS 终结
+# 若启用，需配置 securityadmin init
+extraEnvs:
+  - name: DISABLE_SECURITY_PLUGIN
+    value: "true"
+  - name: OPENSEARCH_JAVA_OPTS
+    value: "-Xms2g -Xmx2g"
+
+persistence:
+  enabled: true
+  storageClass: ssd
+  size: 100Gi
+
+resources:
+  requests: { cpu: "2", memory: "4Gi" }
+  limits:   { cpu: "4", memory: "8Gi" }
+
+# 索引生命周期策略（通过 ISM policy 配置）
+# - vortexops-audit-*:        2 年保留
+# - vortexops-build-logs-*:   30 天热 → 归档 → 删除
+# - vortexops-apps-*:         实时
+# - vortexops-pipeline-*:     1 年保留
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# 监控
+plugins:
+  metricbeat:
+    enabled: false   # 用 prometheus exporter 替代
+
+opensearchObservability:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra

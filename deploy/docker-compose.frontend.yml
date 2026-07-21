@@ -1,0 +1,17 @@
+# VortexOps frontend (Vite + React)
+# 开发：docker compose -f deploy/docker-compose.dev.yml up -d frontend
+# 访问：http://localhost:5173 (dev server) 或 http://localhost:8088 (nginx)
+
+services:
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    depends_on:
+      apiserver:
+        condition: service_started
+      ws-gateway:
+        condition: service_started
+    ports:
+      - "8088:80"
+    restart: unless-stopped

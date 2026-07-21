@@ -1,0 +1,32 @@
+# VortexOps 开发环境 Prometheus 抓取配置
+# 抓取 docker-compose 内 kind 集群节点的 cAdvisor / kubelet 指标。
+# kind 控制面容器暴露 10250（kubelet）与 10255（kubeletReadOnly）；cAdvisor 内嵌于 kubelet。
+# 注意：开发环境关闭 TLS 校验，生产环境应在 K8s 集群内运行 kube-prometheus-stack。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus 自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # kind 控制面 kubelet（cAdvisor 内嵌，容器指标来源）
+  # docker-compose 网络中通过服务名 k8s 解析到 kindest/node 容器。
+  - job_name: 'kind-kubelet'
+    scheme: http
+    metrics_path: /metrics/cadvisor
+    static_configs:
+      - targets: ['k8s:10250']
+        labels:
+          cluster: 'vortexops-dev'
+
+  # kubelet 自身指标
+  - job_name: 'kind-kubelet-self'
+    scheme: http
+    static_configs:
+      - targets: ['k8s:10255']
+        labels:
+          cluster: 'vortexops-dev'

@@ -1,0 +1,21 @@
+# 业务集群批量接入 CSV 模板
+# 用法: ./scripts/onboard-clusters.sh --file clusters.csv
+#
+# 字段说明:
+#   name             - 集群名称（唯一，建议: <业务>-<环境>-<序号>）
+#   kubeconfig_path  - 该集群的 kubeconfig 文件路径（平台用此连接业务集群）
+#   shard_id         - 分配到的 syncer shard ID（auto 表示自动分配）
+#
+# 格式: name,kubeconfig_path,shard_id
+# 以 # 开头的行会被忽略
+#
+# 示例:
+biz-prod-01,/etc/vortexops/kubeconfigs/biz-prod-01.kubeconfig,auto
+biz-prod-02,/etc/vortexops/kubeconfigs/biz-prod-02.kubeconfig,auto
+biz-prod-03,/etc/vortexops/kubeconfigs/biz-prod-03.kubeconfig,auto
+biz-staging-01,/etc/vortexops/kubeconfigs/biz-staging-01.kubeconfig,auto
+biz-dev-01,/etc/vortexops/kubeconfigs/biz-dev-01.kubeconfig,auto
+fin-prod-01,/etc/vortexops/kubeconfigs/fin-prod-01.kubeconfig,0
+fin-prod-02,/etc/vortexops/kubeconfigs/fin-prod-02.kubeconfig,0
+ai-prod-01,/etc/vortexops/kubeconfigs/ai-prod-01.kubeconfig,1
+ai-prod-02,/etc/vortexops/kubeconfigs/ai-prod-02.kubeconfig,1

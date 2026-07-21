@@ -1,0 +1,39 @@
+# Prometheus 抓取配置（开发环境，bridge / host-net 模式）
+# 生产环境请在 K8s 集群内运行 kube-prometheus-stack。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # apiserver / ws-gateway 暴露 /metrics（Go prometheus client）
+  - job_name: 'vortexops-apiserver'
+    static_configs:
+      - targets: ['apiserver:8080']
+        labels:
+          service: 'apiserver'
+
+  - job_name: 'vortexops-ws-gateway'
+    static_configs:
+      - targets: ['ws-gateway:8081']
+        labels:
+          service: 'ws-gateway'
+
+  # k3s kubelet + cAdvisor
+  - job_name: 'kind-kubelet'
+    scheme: http
+    metrics_path: /metrics/cadvisor
+    static_configs:
+      - targets: ['k8s:10250']
+        labels:
+          cluster: 'vortexops-dev'
+
+  - job_name: 'kind-kubelet-self'
+    scheme: http
+    static_configs:
+      - targets: ['k8s:10255']
+        labels:
+          cluster: 'vortexops-dev'

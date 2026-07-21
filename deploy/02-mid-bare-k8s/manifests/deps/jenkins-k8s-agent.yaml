@@ -1,0 +1,56 @@
+# Jenkins（controller HA + K8s 动态 agent）
+# 用法:
+#   helm repo add jenkins https://charts.jenkins.io
+#   helm install jenkins jenkins/jenkins \
+#     -n vortexops-infra \
+#     -f manifests/deps/jenkins-k8s-agent.yaml
+#
+# 适配规模：M（≤20 并发构建）
+# L/XL 规模改多 Jenkins 实例 + 大规模 agent 池
+
+controller:
+  replicaCount: 1              # Jenkins controller 本身单点；agent 池水平扩展
+  resources:
+    requests: { cpu: "1", memory: "2Gi" }
+    limits:   { cpu: "2", memory: "4Gi" }
+  javaOpts: "-Xms1g -Xmx2g"
+  persistence:
+    enabled: true
+    storageClass: ssd-retain
+    size: 50Gi
+  ingress:
+    enabled: true
+    hostName: jenkins.vortexops.internal
+    tls:
+      - secretName: jenkins-tls
+        hosts: [jenkins.vortexops.internal]
+  installPlugins:
+    - kubernetes:4285.v50ed5e62495b_
+    - workflow-aggregator:596.v8c21c963d2d7
+    - git:5.2.2
+    - configuration-as-code:1775.v810dc950b_514
+    - docker-workflow:572.v950f58993843
+
+agent:
+  enabled: true
+  # K8s 动态 agent：构建时按需创建 Pod，构建完销毁
+  kubernetes:
+    namespace: vortexops-builds
+    image: jenkins/inbound-agent:3261.v9c670a_4742a_9-1
+    podName: "vortexops-build-{{buildId}}"
+    # 资源配额（单构建）
+    containerCap: 20
+    resources:
+      requests: { cpu: "1", memory: "2Gi" }
+      limits:   { cpu: "2", memory: "4Gi" }
+    # 构建 workspace 走 PVC（避免每次重建）
+    workspaceVolume:
+      type: DynamicPVC
+      storageClass: ssd
+      requestsSize: 20Gi
+
+persistence:
+  enabled: true
+
+# Backup: 用 Jenkins Configuration as Code + Job DSL 同步到 Git
+# Job 历史走 controller PVC，定期 velero 卷快照

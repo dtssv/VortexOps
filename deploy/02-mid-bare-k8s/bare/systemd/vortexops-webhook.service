@@ -1,0 +1,32 @@
+[Unit]
+Description=VortexOps Webhook (Stable Pod IP injection)
+Documentation=https://github.com/vortexops/vortexops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vortexops
+Group=vortexops
+WorkingDirectory=/opt/vortexops
+EnvironmentFile=/etc/vortexops/vortexops.env
+ExecStart=/opt/vortexops/bin/vortexops-webhook serve
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vortexops-webhook
+
+LimitNOFILE=65536
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# webhook 需读取 TLS 证书
+ReadWritePaths=/opt/vortexops/logs /etc/vortexops/secrets/webhook
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

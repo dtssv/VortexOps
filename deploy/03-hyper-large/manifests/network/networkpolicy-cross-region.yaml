@@ -1,0 +1,94 @@
+# 跨 Region 网络策略（限制东西向流量 + 允许跨 region 复制）
+# 用法: kubectl apply -f manifests/network/networkpolicy-cross-region.yaml -n vortexops
+---
+# 允许跨 Region 命名空间内的 VortexOps 组件互访（仅限复制通道）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cross-region-replication
+  namespace: vortexops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: vortexops
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 同 namespace 内组件互访
+    - from:
+        - podSelector: {}
+    # 跨 region 复制通道（仅限特定端口：5432 PG, 6379 Redis, 9000 MinIO, 9092 Kafka）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              vortexops.io/region: us-west-2
+              vortexops.io/replication-allowed: "true"
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9092
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 同 namespace 内
+    - to:
+        - podSelector: {}
+    # 出站到外部托管集群 API Server（443）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # 跨 region 复制通道
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              vortexops.io/region: us-west-2
+              vortexops.io/replication-allowed: "true"
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9092
+---
+# 拒绝除复制通道外的跨 namespace 访问
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-other-namespaces-default
+  namespace: vortexops
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 默认拒绝其他 namespace 的访问（白名单见 allow-cross-region-replication）
+    - from:
+        - podSelector: {}
+---
+# 命名空间标签（必须先打标签，否则 networkpolicy 不生效）
+# kubectl label namespace vortexops vortexops.io/region=us-east-1
+# kubectl label namespace vortexops vortexops.io/replication-allowed=true

@@ -1,0 +1,64 @@
+# GPU 节点池定义（nodeSelector + tolerations 模板）
+# 用法: 创建分组时由平台自动注入；这里给出标准模板供参考
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-node-pool-templates
+  namespace: vortexops
+data:
+  nvidia-a100.yaml: |
+    # A100 80GB 节点池
+    nodeSelector:
+      accelerator: nvidia-a100
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    resources:
+      gpu_per_replica: 1         # 单 Pod 单卡
+      gpu_resource_name: nvidia.com/gpu
+    # 多卡 TP：nodeSelector 选多卡节点 + topologySpreadConstraints 避免跨节点
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+  nvidia-h100.yaml: |
+    # H100 80GB 节点池
+    nodeSelector:
+      accelerator: nvidia-h100
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    resources:
+      gpu_per_replica: 1
+      gpu_resource_name: nvidia.com/gpu
+  nvidia-l40s.yaml: |
+    # L40S 48GB（推理性价比之选）
+    nodeSelector:
+      accelerator: nvidia-l40s
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    resources:
+      gpu_per_replica: 1
+      gpu_resource_name: nvidia.com/gpu
+  nvidia-a100-tp-8.yaml: |
+    # 8 卡张量并行（单节点 8 卡 A100）
+    nodeSelector:
+      accelerator: nvidia-a100
+      gpu.count: "8"
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    resources:
+      gpu_per_replica: 8
+      gpu_resource_name: nvidia.com/gpu
+    # TP 必须同节点（避免跨节点 RDMA 延迟）
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule

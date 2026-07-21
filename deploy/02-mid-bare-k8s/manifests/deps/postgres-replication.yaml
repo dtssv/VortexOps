@@ -1,0 +1,79 @@
+# PostgreSQL 主从（Bitnami replication 模式）
+# 用法:
+#   helm repo add bitnami https://charts.bitnami.com/bitnami
+#   helm install vortexops-pg bitnami/postgresql \
+#     -n vortexops-infra --create-namespace \
+#     -f manifests/deps/postgres-replication.yaml
+#
+# 适配规模：M（500-5000 应用），1 主 1 从 + 同步复制
+# 升级到 L/XL 时改用 Citus（见 03-hyper-large/manifests/citus-cluster.yaml）
+
+architecture: replication
+
+auth:
+  database: vortexops
+  username: vortexops
+  password: "CHANGE_ME_PG_PASSWORD"   # 生产建议用 existingSecret
+  existingSecret: ""                   # 如: pg-creds
+  secretKeys:
+    adminPasswordKey: admin-password
+    userPasswordKey: password
+    replicationPasswordKey: replication-password
+
+primary:
+  persistence:
+    enabled: true
+    size: 200Gi
+    storageClass: ssd-retain
+  resources:
+    requests: { cpu: "4", memory: "8Gi" }
+    limits:   { cpu: "8", memory: "16Gi" }
+  extendedConfiguration: |
+    wal_level = replica
+    max_wal_senders = 10
+    max_replication_slots = 10
+    synchronous_commit = on
+    synchronous_standby_names = '*'
+    shared_preload_libraries = 'vector,pg_trgm'
+    max_connections = 200
+    shared_buffers = 2GB
+    effective_cache_size = 6GB
+    work_mem = 32MB
+    maintenance_work_mem = 512MB
+  initdb:
+    scripts:
+      init-extensions.sql: |
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+readReplicas:
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 200Gi
+    storageClass: ssd-retain
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits:   { cpu: "4", memory: "8Gi" }
+  extendedConfiguration: |
+    hot_standby = on
+    hot_standby_feedback = on
+    max_connections = 200
+    shared_buffers = 1GB
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra
+
+backup:
+  enabled: true
+  cronjob:
+    schedule: "0 2 * * *"     # 每日 02:00 全量
+    storage:
+      s3:
+        endpoint: http://minio.vortexops-infra.svc:9000
+        bucket: vortexops-backups
+        path: postgres/$(date +%Y%m%d)

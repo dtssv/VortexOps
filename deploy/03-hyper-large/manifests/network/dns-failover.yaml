@@ -1,0 +1,55 @@
+# 跨 Region DNS 故障转移（ExternalName + 健康检查）
+# 用法: kubectl apply -f manifests/network/dns-failover.yaml -n vortexops
+#
+# 配合外部 GSLB（如 AWS Route53 Health Check、阿里云 GTM）
+# 这里给出 K8s ExternalName + Service 的兜底方案
+---
+# 主 Region 健康探针
+apiVersion: v1
+kind: Service
+metadata:
+  name: vortexops-region-a-probe
+  namespace: vortexops
+spec:
+  type: ExternalName
+  externalName: app.us-east-1.vortexops.io
+---
+# 备 Region 健康探针
+apiVersion: v1
+kind: Service
+metadata:
+  name: vortexops-region-b-probe
+  namespace: vortexops
+spec:
+  type: ExternalName
+  externalName: app.us-west-2.vortexops.io
+---
+# ExternalName 记录（可在 CoreDNS 配置 geoip 路由）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-failover-config
+  namespace: kube-system
+data:
+  # 添加到 CoreDNS Corefile 的 .server 块
+  vortexops.io.failover: |
+    # 主 Region 健康 → 解析到主
+    # 主 Region 不健康 → 解析到备
+    # 通过调用外部健康检查 API（如 kubelet /readyz）决策
+    failover vortexops.io {
+      primary app.us-east-1.vortexops.io
+      secondary app.us-west-2.vortexops.io
+      health_check /readyz 10s
+    }
+---
+# 公网 DNS 记录（在 DNS 服务商配置）
+# 记录类型: CNAME
+# 主机: app.vortexops.io
+# 值: gslb.vortexops.io（由 GSLB 动态解析到健康 region）
+#
+# GSLB 配置（以 Route53 为例）：
+# - 创建 health check 监控 app.us-east-1.vortexops.io/readyz
+# - Routing Policy: Latency-based 或 Failover
+# - Primary: app.us-east-1.vortexops.io (us-east-1)
+# - Secondary: app.us-west-2.vortexops.io (us-west-2)
+# - Failover: 主健康检查失败后 30s 内切到备

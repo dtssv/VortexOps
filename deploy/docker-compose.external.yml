@@ -1,0 +1,60 @@
+# =============================================================================
+# External 集群模式 override（连接物理机 k3s 集群）
+# -----------------------------------------------------------------------------
+# 用途：不在 docker 内启动 k3s，而是连接已存在的物理机 k3s 集群。
+#       适用于生产前联调、真实 underlay 网络、多节点验证场景。
+#
+# 启动：
+#   # 1. 把外部集群 kubeconfig 放到 deploy/external-kubeconfig.yaml
+#   #    （server 地址需改为 apiserver 容器可达的 IP/域名）
+#   docker compose -f docker-compose.dev.yml -f docker-compose.external.yml up -d
+#
+# 前置：
+#   - 外部 k3s 集群已就绪，apiserver 可达
+#   - deploy/external-kubeconfig.yaml 已就位（含正确的 server 地址与证书）
+#   - 集群已安装 Multus + Macvlan NAD（如需 underlay）
+# =============================================================================
+
+services:
+  # 不启动内嵌 k3s，k8s 服务整体禁用。
+  k8s:
+    profiles: ["disabled"]
+    restart: "no"
+    entrypoint: ["echo", "k8s disabled in external mode"]
+
+  tekton-init:
+    # tekton-init 仍可对 external 集群执行（如需安装 Tekton）。
+    depends_on: !reset []
+    environment:
+      K3S_NETWORK_MODE: "external"
+    volumes:
+      - ./external-kubeconfig.yaml:/etc/vortexops/admin.conf:ro
+      - ./external-kubeconfig.yaml:/etc/vortexops/kubeconfig.yaml:ro
+      - ./tekton-init/install-tekton.sh:/app/install-tekton.sh:ro
+
+  apiserver:
+    # 用 !override 完全替换 depends_on：保留对中间件的依赖，移除对 k8s 的依赖。
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      jenkins:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      prometheus-server:
+        condition: service_healthy
+    environment:
+      K3S_NETWORK_MODE: "external"
+      VORTEXOPS_K8S_API_SERVER: "${VORTEXOPS_K8S_API_SERVER:-https://k3s-api.example.com:6443}"
+      VORTEXOPS_K8S_KUBECONFIG: /etc/vortexops/kubeconfig.yaml
+    volumes:
+      - ./external-kubeconfig.yaml:/etc/vortexops/kubeconfig.yaml:ro
+      - ./external-kubeconfig.yaml:/etc/vortexops/admin.conf:ro

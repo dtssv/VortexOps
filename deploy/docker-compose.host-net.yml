@@ -1,0 +1,76 @@
+# =============================================================================
+# Host-Network 模式 override（underlay 开发验证）
+# -----------------------------------------------------------------------------
+# 用途：让 k3s 容器共享宿主机网络栈，叠加 Multus + Macvlan，
+#       使带 underlay 注解的 Pod 能直接拿到宿主机所在二层网络的 IP，
+#       用于在开发机上验证 VIP / 直连 Pod IP 的发布流程。
+#
+# 启动：
+#   docker compose -f docker-compose.dev.yml -f docker-compose.host-net.yml up -d
+#
+# 前置：Docker Desktop 需开启 host.docker.internal（默认开启）。
+#       宿主机物理网卡名默认 eth0（Linux）/ eth0（Docker Desktop VM），
+#       如不一致请通过 K3S_UNDERLAY_PARENT_IFACE 环境变量覆盖。
+# =============================================================================
+
+services:
+  k8s:
+    network_mode: host
+    # host 模式下不再需要 ports 映射（容器即宿主机网络栈），
+    # 6443 / NodePort 直接监听在宿主机。
+    ports: !reset []
+    environment:
+      K3S_NETWORK_MODE: "host-net"
+      # 导出给 apiserver 的 kubeconfig server（Docker Desktop VM IP，在 k3s TLS SAN 内）。
+      K3S_KUBE_SERVER: "${K3S_KUBE_SERVER:-https://192.168.65.3:6443}"
+      # Macvlan 父接口（宿主机物理/虚拟网卡名）。
+      K3S_UNDERLAY_PARENT_IFACE: "${K3S_UNDERLAY_PARENT_IFACE:-eth0}"
+      # Underlay 子网 CIDR，默认取宿主机网段，按需覆盖。
+      K3S_UNDERLAY_SUBNET: "${K3S_UNDERLAY_SUBNET:-192.168.1.0/24}"
+      K3S_UNDERLAY_GATEWAY: "${K3S_UNDERLAY_GATEWAY:-192.168.1.1}"
+      K3S_UNDERLAY_RANGE_START: "${K3S_UNDERLAY_RANGE_START:-192.168.1.200}"
+      K3S_UNDERLAY_RANGE_END: "${K3S_UNDERLAY_RANGE_END:-192.168.1.250}"
+
+  apiserver:
+    environment:
+      # host-net：k3s API 在 VM host 网络，bridge 容器经 Docker VM IP 访问（须在 TLS SAN 内）。
+      VORTEXOPS_K8S_API_SERVER: "${K3S_KUBE_SERVER:-https://192.168.65.3:6443}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  tekton-init:
+    environment:
+      # tekton-init 也走 host.docker.internal 访问外部 k3s API。
+      K3S_NETWORK_MODE: "host-net"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # host-net 模式：自动将集群 network_profile 设为 large-underlay 并创建 macvlan IP 池。
+  # 运行：docker compose -f docker-compose.dev.yml -f docker-compose.host-net.yml run --rm underlay-seed
+  # 使用 profile 避免 `up -d` 时自动执行（需先注册集群）。
+  underlay-seed:
+    profiles: ["underlay"]
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+      apiserver:
+        condition: service_started
+    environment:
+      VORTEXOPS_API_BASE: http://apiserver:8080/api/v1
+      VORTEXOPS_ADMIN_USER: admin
+      VORTEXOPS_ADMIN_PASSWORD: admin123
+      VORTEXOPS_DB_HOST: postgres
+      VORTEXOPS_DB_PORT: "5432"
+      VORTEXOPS_DB_DATABASE: vortexops
+      VORTEXOPS_DB_USERNAME: vortexops
+      VORTEXOPS_DB_PASSWORD: vortexops_dev
+      K3S_UNDERLAY_SUBNET: "${K3S_UNDERLAY_SUBNET:-192.168.1.0/24}"
+      K3S_UNDERLAY_GATEWAY: "${K3S_UNDERLAY_GATEWAY:-192.168.1.1}"
+      K3S_UNDERLAY_PARENT_IFACE: "${K3S_UNDERLAY_PARENT_IFACE:-eth0}"
+      K3S_UNDERLAY_RANGE_START: "${K3S_UNDERLAY_RANGE_START:-192.168.1.200}"
+    volumes:
+      - ./db-seed/apply-underlay-cluster.sh:/app/apply-underlay-cluster.sh:ro
+    working_dir: /app
+    entrypoint: ["sh", "-c", "tr -d '\\r' < /app/apply-underlay-cluster.sh | sh"]
+    restart: "no"

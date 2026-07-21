@@ -1,0 +1,47 @@
+# NVIDIA GPU 设备插件（管理集群 GPU 节点用，如平台托管推理服务）
+# 用法: kubectl apply -f manifests/gpu/nvidia-device-plugin.yaml
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  template:
+    metadata:
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      containers:
+        - name: nvidia-device-plugin-ctr
+          image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0
+          env:
+            - name: FAIL_ON_INIT_ERROR
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+---
+# GPU 节点标签 + 污点（需在节点上手动执行或用 node-feature-discovery）
+# 给 GPU 节点打标签：
+#   kubectl label node <node> accelerator=nvidia-a100
+#   kubectl label node <node> nvidia.com/gpu.present=true
+#
+# 给 GPU 节点打污点（防止非 GPU 工作负载调度）：
+#   kubectl taint node <node> nvidia.com/gpu:NoSchedule

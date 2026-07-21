@@ -1,0 +1,64 @@
+# MinIO 分布式（4 节点，EC:2 纠删码）
+# 用法:
+#   helm repo add minio https://charts.min.io/
+#   helm install minio minio/minio \
+#     -n vortexops-infra \
+#     -f manifests/deps/minio-distributed.yaml
+#
+# 适配规模：M（构建日志 / SBOM / 配置快照 / 模型权重冷版本）
+# 4 节点 EC:2 可容忍 2 节点故障，存储利用率 50%
+
+mode: distributed
+
+replicas: 4
+
+existingSecret: ""                # 生产用 s3-creds
+accessKey: "admin"
+secretKey: "CHANGE_ME_S3_SECRET"
+
+persistence:
+  enabled: true
+  storageClass: ssd
+  size: 500Gi
+  accessMode: ReadWriteOnce
+
+resources:
+  requests: { cpu: "1",   memory: "2Gi" }
+  limits:   { cpu: "2",   memory: "4Gi" }
+
+ingress:
+  enabled: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - minio.vortexops.internal
+  tls:
+    - secretName: minio-tls
+      hosts: [minio.vortexops.internal]
+
+buckets:
+  - name: vortexops
+    policy: none
+  - name: vortexops-backups
+    policy: none
+  - name: vortexops-build-logs
+    policy: none
+    versioning: true
+  - name: vortexops-model-weights
+    policy: none
+    versioning: true
+
+# 生命周期策略（需用 mc 或 S3 API 配置）
+# build-logs: 30 天热 → 90 天归档 → 删除
+# model-weights: 热版本常驻，冷版本转低频
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# 监控
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: vortexops-infra

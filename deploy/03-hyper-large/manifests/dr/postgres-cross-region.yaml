@@ -1,0 +1,70 @@
+# PostgreSQL 跨 Region 物理复制（主→备只读副本）
+# 用法: 在备 Region 执行 kubectl apply -f manifests/dr/postgres-cross-region.yaml -n vortexops-infra
+#
+# 方案：pgBackRest + WAL streaming
+# 主 Region 持续推送 WAL 到对象存储 + 备 Region 流式订阅
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: vortexops-pg-standby
+  namespace: vortexops-infra
+  labels:
+    app.kubernetes.io/name: postgresql
+    vortexops.io/role: standby
+    vortexops.io/region: us-west-2
+spec:
+  instances: 2
+  primaryStorageMethod: storageClass
+  storage:
+    storageClass: ssd-retain
+    size: 1Ti
+  # 关键：从主 Region 复制
+  replica:
+    enabled: true
+    source: region-a-primary
+  externalClusters:
+    - name: region-a-primary
+      connectionParameters:
+        host: pg-primary.us-east-1.vortexops.io
+        port: "5432"
+        user: replicator
+        dbname: vortexops
+      sslKey:
+        name: pg-replication-cert
+        key: tls.key
+      sslCert:
+        name: pg-replication-cert
+        key: tls.crt
+      sslRootCert:
+        name: pg-replication-cert
+        key: ca.crt
+  # 容灾级别
+  postgresConfiguration:
+    wal_level: replica
+    max_wal_senders: 10
+    hot_standby: "on"
+    hot_standby_feedback: "on"
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://vortexops-pg-backup/standby-us-west-2/
+      endpointURL: https://s3.us-west-2.vortexops.io
+      s3Credentials:
+        accessKeyId:
+          name: s3-creds
+          key: accessKey
+        secretAccessKey:
+          name: s3-creds
+          key: secretKey
+      wal:
+        maxParallel: 8
+    retentionPolicy: "30d"
+---
+# 故障切换时提升备为独立主（手动执行，非托管）
+# 切换步骤（灾备演练）：
+# 1. kubectl patch cluster vortexops-pg-standby -n vortexops-infra --type='json' \
+#      -p='[{"op":"replace","path":"/spec/replica/enabled","value":false}]'
+# 2. 修改备 region 的 apiserver 配置，指向本地 PG
+# 3. 验证数据一致性（pg_rewind 检查）
+# 4. DNS 切流到备 region
+# 5. 原 region 恢复后作为新的 standby 重建

@@ -1,0 +1,32 @@
+[Unit]
+Description=VortexOps WebSocket Gateway
+Documentation=https://github.com/vortexops/vortexops
+After=network-online.target vortexops-apiserver.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vortexops
+Group=vortexops
+WorkingDirectory=/opt/vortexops
+EnvironmentFile=/etc/vortexops/vortexops.env
+ExecStart=/opt/vortexops/bin/vortexops-ws-gateway serve
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vortexops-ws-gateway
+
+LimitNOFILE=131072      # WS 长连接需要更多 fd
+LimitNPROC=65536
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/vortexops/logs
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,41 @@
+# syncer 分片配置（按 namespace shard）
+# 用法: kubectl apply -f manifests/syncer-shard/syncer-shard-configmap.yaml -n vortexops
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vortexops-syncer-shard-config
+  namespace: vortexops
+data:
+  # 分片总数（与 syncer 副本数对齐）
+  shard_count: "64"
+  # 每 syncer 实例负责的 namespace 分片 ID 列表
+  # 由 StatefulSet 序号 + shard_count 自动计算：instance_ordinal = pod_ordinal % shard_count
+  shard_assignment_strategy: "consistent_hash"
+  # 分片键：cluster_id + namespace
+  shard_key: "cluster_id:namespace"
+
+  # 每 syncer 实例最大管理的集群数
+  clusters_per_instance: "50"
+
+  # Informer 配置
+  informer_config.yaml: |
+    # Initial List 优化：分页拉取，避免 API Server 阻塞
+    list_options:
+      resource_version: "0"
+      page_size: 500
+    # Watch 重试
+    watch_retry:
+      backoff: "exponential"
+      initial_interval: "1s"
+      max_interval: "60s"
+    # 缓存刷新
+    cache_refresh_interval: "5m"
+
+  # Lease 选举配置（K8s coordination.k8s.io/v1 Lease）
+  lease_config.yaml: |
+    # 分片主选举粒度：(cluster, namespace_shard) 级
+    lease_prefix: "vortexops-syncer-shard-"
+    lease_duration_seconds: 30
+    renew_deadline_seconds: 20
+    retry_period_seconds: 5

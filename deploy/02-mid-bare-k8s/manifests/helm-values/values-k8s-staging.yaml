@@ -1,0 +1,72 @@
+# =============================================================================
+# VortexOps 预发环境 values（资源略小于生产，用于上线前验证）
+# =============================================================================
+global:
+  imageRegistry: registry.vortexops.io
+  imageTag: "1.0.0-rc1"
+  imagePullSecrets:
+    - name: registry-creds
+
+postgresql:
+  enabled: false
+  external:
+    host: vortexops-pg-staging.vortexops-infra.svc
+    port: 5432
+    database: vortexops_staging
+    username: vortexops
+    existingSecret: pg-creds-staging
+    secretKey: password
+
+redis:
+  enabled: false
+  external:
+    host: vortexops-redis-staging.vortexops-infra.svc
+    existingSecret: redis-creds-staging
+    secretKey: password
+
+objectStorage:
+  type: s3
+  endpoint: http://minio.vortexops-infra.svc:9000
+  bucket: vortexops-staging
+  existingSecret: s3-creds-staging
+  pathStyle: true
+
+apiserver:
+  replicas: 1                    # 预发单副本
+  autoscaling:
+    enabled: false
+  config:
+    dbPoolMax: 20
+    jwtSecretRef: { name: jwt-secret-staging, key: key }
+    encryptionKeyRef: { name: kms-key-staging, key: key }
+
+syncer:
+  replicas: 1
+wsGateway:
+  replicas: 1
+extApiGateway:
+  replicas: 1
+pipelineWorker:
+  replicas: 1
+webhook:
+  replicas: 1
+frontend:
+  replicas: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: vortexops-staging.internal
+      service: frontend
+      port: 80
+    - host: api-staging.vortexops.internal
+      service: apiserver
+      port: 8080
+  tls:
+    - secretName: vortexops-staging-tls
+      hosts: [vortexops-staging.internal, api-staging.vortexops.internal]

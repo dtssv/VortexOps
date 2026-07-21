@@ -1,0 +1,76 @@
+# VortexOps 平台 ServiceAccount + RBAC（在被管业务集群执行）
+# 用法: 在每个被管业务 K8s 集群的目标 namespace 执行：
+#   kubectl apply -f manifests/system/service-rbac.yaml -n <ns>
+#
+# 最小权限原则：仅放行 VortexOps 管理工作负载所需的资源。
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vortexops
+  namespace: vortexops-dev    # 替换为实际 namespace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vortexops
+  namespace: vortexops-dev
+rules:
+  # 工作负载
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod / 配置 / Service
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "events", "namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vortexops
+  namespace: vortexops-dev
+subjects:
+  - kind: ServiceAccount
+    name: vortexops
+    namespace: vortexops-dev
+roleRef:
+  kind: Role
+  name: vortexops
+  apiGroup: rbac.authorization.k8s.io
+---
+# Pod 安全策略（PodSecurityPolicy 1.25+ 已废弃，改用 Pod Security Admission）
+# 在 namespace 上加 label：
+#   kubectl label ns <ns> pod-security.kubernetes.io/enforce=baseline
+#   kubectl label ns <ns> pod-security.kubernetes.io/audit=restricted
+#   kubectl label ns <ns> pod-security.kubernetes.io/warn=restricted
+---
+# ResourceQuota（防止单 namespace 占用过多资源）
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: vortexops-quota
+  namespace: vortexops-dev
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: "40Gi"
+    limits.cpu: "40"
+    limits.memory: "80Gi"
+    persistentvolumeclaims: "10"
+    count/deployments.apps: "50"
+    count/pods: "100"

@@ -1,0 +1,60 @@
+# 配置漂移检测（防止多 Region 配置不一致）
+# 用法: kubectl apply -f manifests/dr/config-drift-check.yaml -n vortexops-infra
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: config-drift-check
+  namespace: vortexops-infra
+spec:
+  schedule: "0 */12 * * *"   # 每 12 小时检查一次
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: drift-check
+              image: bitnami/kubectl:1.30
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "[drift] 开始配置漂移检测"
+
+                  # 提取主 region 关键配置
+                  kubectl get configmap -n vortexops -o yaml > /tmp/region-a-configmaps.yaml
+                  kubectl get secret -n vortexops -o yaml > /tmp/region-a-secrets.yaml 2>/dev/null || true
+                  kubectl get deployment -n vortexops -o yaml > /tmp/region-a-deployments.yaml
+
+                  # 计算哈希
+                  HASH_A=$(sha256sum /tmp/region-a-configmaps.yaml | awk '{print $1}')
+                  echo "[drift] Region A ConfigMap hash: ${HASH_A}"
+
+                  # 对比备 region（通过 kubeconfig 切换 context）
+                  # KUBECONFIG=/etc/region-b/kubeconfig kubectl get configmap -n vortexops ...
+                  # 这里仅做单 region 内的配置快照，多 region 对比需通过外部 CI/CD pipeline
+
+                  # 上传快照到对象存储（用于审计）
+                  aws s3 cp /tmp/region-a-configmaps.yaml \
+                    s3://vortexops-config-snapshot/$(date +%Y%m%d-%H%M%S)-configmaps.yaml \
+                    --endpoint-url ${S3_ENDPOINT}
+
+                  echo "[drift] 完成"
+              env:
+                - name: S3_ENDPOINT
+                  value: "https://s3.us-east-1.vortexops.io"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: accessKey
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-creds
+                      key: secretKey
