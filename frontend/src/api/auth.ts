@@ -22,6 +22,7 @@ export const authApi = {
   logoutAll: () => post('/auth/logout-all'),
   me: () => get<User>('/users/me'),
   myMenus: () => get<Menu[]>('/me/menus'),
+  myPermissions: () => get<string[]>('/me/permissions'),
   changePassword: (oldPassword: string, newPassword: string) =>
     post('/users/me/password', { old_password: oldPassword, new_password: newPassword }),
   deleteAccount: () => del(`/users/me`),

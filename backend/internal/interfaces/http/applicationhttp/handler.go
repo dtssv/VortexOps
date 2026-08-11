@@ -888,6 +888,53 @@ func (h *Handler) ListGroupPods(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"items": pods})
 }
 
+// ListGroupStableIPs GET /api/v1/groups/{groupId}/stable-ips
+// 返回分组已分配的稳定 IP，以及集群是否具备固定 IP 直连能力。
+func (h *Handler) ListGroupStableIPs(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, chi.URLParam(r, "groupId"))
+	if !ok {
+		return
+	}
+	g, err := h.svc.GetGroup(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	allocs, err := h.clusterSvc.ListGroupStableIPs(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(allocs))
+	for _, a := range allocs {
+		if a == nil {
+			continue
+		}
+		items = append(items, map[string]any{
+			"ip":            a.IPAddress,
+			"replica_index": a.ReplicaIndex,
+			"status":        string(a.Status),
+		})
+	}
+	capOK := true
+	capMsg := ""
+	if err := h.clusterSvc.CheckDirectAccessCapability(r.Context(), g.ClusterID); err != nil {
+		capOK = false
+		if ae, ok := apperr.As(err); ok && ae.Message != "" {
+			capMsg = ae.Message
+		} else {
+			capMsg = err.Error()
+		}
+	}
+	httpx.OK(w, map[string]any{
+		"items": items,
+		"capability": map[string]any{
+			"ok":      capOK,
+			"message": capMsg,
+		},
+	})
+}
+
 // GetGroupPodLogs GET /api/v1/groups/{groupId}/pods/{pod}/logs?container=&tail=
 func (h *Handler) GetGroupPodLogs(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, chi.URLParam(r, "groupId"))

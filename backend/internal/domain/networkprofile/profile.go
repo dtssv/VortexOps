@@ -1,9 +1,10 @@
 // Package networkprofile 定义集群网络方案（Network Profile）。
 //
-// 不同规模的集群采用不同的网络方案，由集群配置（cluster.metadata.network_profile）选定：
+// 不同规模的集群采用不同的网络方案，由集群配置（cluster.metadata.network_profile）选定。
+// 统一期望：任意 profile 下分组 Pod 都必须保留固定 IP，且对外以 Pod IP 直连（不经 Service/NodePort/LB）。
 //
-//   - dev-single     开发环境单集群：单机 kind/k3s，默认 Overlay，端口走 NodePort 暴露。
-//   - medium-overlay 中型集群：标准 Overlay（Flannel/Calico VXLAN），多集群独立 CIDR，互不通信或经网关。
+//   - dev-single     开发环境单集群：默认 Overlay 网卡 + Multus Underlay 副网卡固定 IP 直连。
+//   - medium-overlay 中型集群：Overlay 集群内通信 + Multus Underlay 副网卡固定 IP 直连。
 //   - large-underlay 大型集群：Underlay（Macvlan/IPVLAN），Pod 拿物理局域网 IP，与办公 PC 同网段直连；
 //                    多集群共享超网（如 10.0.0.0/8 切 /16），由平台全局 IPAM 保证 IP 唯一。
 //   - xlarge-bgp     超大型集群：Calico BGP-only（无封装 L3 路由），Pod 路由自动宣告到核心交换机；
@@ -21,7 +22,7 @@ import (
 type Profile string
 
 const (
-	// ProfileDevSingle 开发环境单集群：单机 kind/k3s，默认 Overlay + NodePort。
+	// ProfileDevSingle 开发环境单集群：单机 kind/k3s，Overlay + Multus 副网卡固定 IP 直连。
 	ProfileDevSingle Profile = "dev-single"
 	// ProfileMediumOverlay 中型集群：标准 Overlay（Flannel/Calico VXLAN），多集群独立 CIDR。
 	ProfileMediumOverlay Profile = "medium-overlay"
@@ -94,7 +95,8 @@ type ProfileConfig struct {
 
 	// 通用
 	// MultusEnabled 是否启用 Multus 双网卡（默认 Overlay 网卡 + Underlay 副网卡）。
-	// large-underlay 常配合 Multus 保留集群内 Service/ClusterIP 通信能力。
+	// dev-single / medium-overlay 必须开启：Overlay 网段不可从集群外直连，业务口走副网卡固定 IP。
+	// large-underlay 常配合 Multus 保留集群内 Overlay 通信能力。
 	MultusEnabled bool `json:"multus_enabled,omitempty"`
 }
 
@@ -142,11 +144,80 @@ func (c *ProfileConfig) Validate() error {
 	}
 }
 
-// SupportsUnderlay 该 profile 是否支持 Underlay 直连模式（分组 network_mode=underlay）。
-// 只有 large-underlay profile 下的分组才能真正用 Underlay Pod 直连；
-// 其它 profile 即便配了 underlay 网络模式也应拒绝（CNI 不支持）。
+// SupportsUnderlay 该 profile 是否以 Underlay 作为主数据面（Pod 主网卡即物理 IP）。
 func (c *ProfileConfig) SupportsUnderlay() bool {
-	return c.Profile == ProfileLargeUnderlay
+	return c != nil && c.Profile == ProfileLargeUnderlay
+}
+
+// RequiresUnderlaySecondary Overlay/开发集群的 Overlay 网段不可从集群外直连，
+// 必须走 Multus 副网卡 + Underlay IP 池，才能满足「固定 IP + Pod 直连」。
+func (c *ProfileConfig) RequiresUnderlaySecondary() bool {
+	if c == nil {
+		return true
+	}
+	return c.Profile == ProfileDevSingle || c.Profile == ProfileMediumOverlay
+}
+
+// SupportsStaticIP 主 CNI 是否支持静态 Pod IP 注解（不含 Flannel/kindnet）。
+func (c *ProfileConfig) SupportsStaticIP() bool {
+	if c == nil {
+		return false
+	}
+	switch c.CNI {
+	case CNICalico, CNICilium, CNIWhereabouts, CNIMacvlan, CNIIPVLAN, CNIKubeOVN:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateDirectAccessCapability 校验集群是否具备「固定 IP + 对外直连」能力。
+// poolProviders 为该集群 IP 池的 provider 列表（如 macvlan、calico-ipam）。
+func ValidateDirectAccessCapability(c *ProfileConfig, poolProviders []string) error {
+	if c == nil {
+		c = &ProfileConfig{Profile: ProfileDevSingle}
+	}
+	if c.RequiresUnderlaySecondary() {
+		if !c.MultusEnabled {
+			return fmt.Errorf("%s 需开启 Multus 副网卡，才能为 Pod 分配可对外直连的固定 IP（Overlay 网段不可从集群外直连）", c.Profile.Label())
+		}
+		if !hasAnyProvider(poolProviders, string(CNIMacvlan), string(CNIIPVLAN)) {
+			return fmt.Errorf("%s 需配置 macvlan/ipvlan Underlay IP 池，才能固定 IP 并对外直连", c.Profile.Label())
+		}
+		return nil
+	}
+	switch c.Profile {
+	case ProfileLargeUnderlay:
+		if !hasAnyProvider(poolProviders, string(CNIMacvlan), string(CNIIPVLAN), string(CNIKubeOVN)) {
+			return fmt.Errorf("large-underlay 集群需配置 macvlan/ipvlan/kube-ovn IP 池")
+		}
+		return nil
+	case ProfileXLargeBGP:
+		if !c.SupportsStaticIP() {
+			return fmt.Errorf("xlarge-bgp 集群 CNI（%s）不支持静态 IP，请使用 Calico 或 Cilium", c.CNI)
+		}
+		if !hasAnyProvider(poolProviders, "calico-ipam", string(CNIWhereabouts), string(CNIKubeOVN)) {
+			return fmt.Errorf("xlarge-bgp 集群需配置 calico-ipam/whereabouts IP 池")
+		}
+		return nil
+	default:
+		return fmt.Errorf("集群未配置可用的固定 IP 直连能力")
+	}
+}
+
+func hasAnyProvider(providers []string, want ...string) bool {
+	set := map[string]struct{}{}
+	for _, p := range providers {
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	for _, w := range want {
+		if _, ok := set[w]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // IsGlobalIPAM 该 profile 是否需要平台全局 IPAM（跨集群唯一 IP 分配）。
@@ -176,13 +247,13 @@ func (p Profile) Label() string {
 func (p Profile) Description() string {
 	switch p {
 	case ProfileDevSingle:
-		return "单机 kind/k3s，默认 Overlay，端口走 NodePort 暴露。无需额外 CNI 配置，适合本地开发。"
+		return "单机 kind/k3s。默认 Overlay 仅供集群内通信；对外访问走 Multus Underlay 副网卡固定 IP 直连。Flannel 单独不可用，需开启 Multus 并配置 Underlay IP 池。"
 	case ProfileMediumOverlay:
-		return "标准 Overlay（Flannel/Calico VXLAN），多集群独立 CIDR 互不通信或经网关。中小规模生产首选。"
+		return "标准 Overlay（Calico/Cilium VXLAN）供集群内通信；对外访问走 Multus Underlay 副网卡固定 IP 直连。需开启 Multus 并配置 macvlan/ipvlan IP 池。Flannel 单独不支持静态 IP。"
 	case ProfileLargeUnderlay:
-		return "Underlay（Macvlan/IPVLAN），Pod 拿物理局域网 IP，与办公 PC 同网段直连。多集群共享超网，平台全局 IPAM 保证 IP 唯一。无隧道纯二层/三层转发。"
+		return "Underlay（Macvlan/IPVLAN），Pod 拿物理局域网固定 IP，与办公 PC 同网段直连。多集群共享超网，平台全局 IPAM 保证 IP 唯一。无隧道纯二层/三层转发。"
 	case ProfileXLargeBGP:
-		return "Calico BGP-only（无封装 L3 路由），Pod 路由自动宣告到核心交换机/Route Reflector。适合超大规模、频繁扩缩，跨集群经 BGP 互联。"
+		return "Calico/Cilium BGP-only（无封装 L3 路由），Pod 固定 IP 经 BGP 宣告到核心交换机/Route Reflector，办公网三层直连。适合超大规模、频繁扩缩，跨集群经 BGP 互联。"
 	default:
 		return ""
 	}

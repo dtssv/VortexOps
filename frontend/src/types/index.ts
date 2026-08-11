@@ -342,6 +342,17 @@ export interface Group {
   updated_at: string;
 }
 
+export interface GroupStableIP {
+  ip: string;
+  replica_index: number;
+  status: string;
+}
+
+export interface GroupStableIPsResponse {
+  items: GroupStableIP[];
+  capability: { ok: boolean; message?: string };
+}
+
 export interface PodSummary {
   name: string;
   namespace: string;

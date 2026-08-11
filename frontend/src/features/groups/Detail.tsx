@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Checkbox, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
-import { CodeOutlined, CopyOutlined, DeleteOutlined, DeploymentUnitOutlined, DesktopOutlined, DiffOutlined, EditOutlined, FileTextOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
+import { CodeOutlined, CopyOutlined, DeleteOutlined, DeploymentUnitOutlined, DesktopOutlined, DiffOutlined, EditOutlined, FileTextOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, ToolOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { PageContainer } from '@/components/PageContainer';
@@ -23,19 +23,34 @@ import { workspaceApi } from '@/api/workspaces';
 import { configApi } from '@/api/configs';
 import { releaseApi } from '@/api/releases';
 import type { LogAnalyzeInput } from '@/api/diagnosis';
+import { PermissionGate } from '@/components/PermissionGate';
+import { usePermission } from '@/hooks/usePermission';
 import { confirmDanger } from '@/utils/action';
 import { formatTime, formatRelative, formatDuration } from '@/utils/format';
 import { strategyLabel } from '@/features/releases/labels';
 import type { Group, PodSummary, Release, ConfigSet, ConfigContentSnapshot } from '@/types';
 import { clusterApi, type ClusterCapacity } from '@/api/clusters';
+import { getNetworkProfileOption, resolveClusterNetworkMeta, requiresUnderlaySecondary } from '@/features/clusters/networkProfiles';
+import type { GroupStableIP } from '@/types';
 
 export default function GroupDetailPage() {
   const params = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const groupId = Number(params.groupId);
+  const canManageGroup = usePermission('group:manage').can;
+  const canScale = usePermission('group:scale').can;
+  const canRelease = usePermission('release:trigger').can;
+  const canViewConfig = usePermission('menu:config:view').can;
+  const canViewRelease = usePermission('menu:release:view').can;
+  const canExec = usePermission('ops:exec').can;
+  const canDiagnose = usePermission('menu:diagnosis:view').can;
+  const canViewK8s = usePermission('menu:k8s:view').can;
+  const canViewOps = canExec || canViewK8s;
 
+  const [opsOpen, setOpsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editForm] = Form.useForm();
   const [scaleUpOpen, setScaleUpOpen] = useState(false);
@@ -191,6 +206,26 @@ export default function GroupDetailPage() {
     return detail ? <Tooltip title={detail}>{tag}</Tooltip> : tag;
   }
 
+  const tabItems = [
+    { key: 'overview', label: '概览', children: <OverviewTab /> },
+    { key: 'pods', label: 'Pod', children: <PodsTab groupId={groupId} /> },
+    ...(canViewConfig
+      ? [{ key: 'configs', label: '配置', children: <ConfigsTab groupId={groupId} applicationId={group?.application_id} /> }]
+      : []),
+    ...(canViewRelease
+      ? [{ key: 'releases', label: '发布', children: <ReleasesTab groupId={groupId} applicationId={group?.application_id} currentImageId={group?.current_image_id} /> }]
+      : []),
+  ];
+  const allowedTabKeys = tabItems.map((t) => t.key);
+  const activeTab = allowedTabKeys.includes(searchParams.get('tab') || '')
+    ? (searchParams.get('tab') as string)
+    : 'overview';
+  const onTabChange = (key: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', key);
+    setSearchParams(next, { replace: true });
+  };
+
   return (
     <PageContainer
       title={group?.display_name || group?.name || '分组'}
@@ -273,104 +308,128 @@ export default function GroupDetailPage() {
             <Tag color="blue" style={{ margin: '0 4px', lineHeight: '24px' }}>
               {workload?.replicas ?? 0} 副本
             </Tag>
-            <Button
-              size="small"
-              icon={<PlusOutlined />}
-              loading={scaleUpMutation.isPending}
-              onClick={() => {
-                scaleUpForm.setFieldsValue({ replicas: (workload?.replicas ?? 0) + 1 });
-                setScaleUpOpen(true);
-              }}
-            >
-              扩容
-            </Button>
-            <Button
-              size="small"
-              icon={<DeleteOutlined />}
-              loading={scaleDownMutation.isPending}
-              disabled={(workload?.replicas ?? 0) === 0}
-              onClick={() => {
-                setSelectedRemovePods([]);
-                setScaleDownOpen(true);
-              }}
-            >
-              缩容
-            </Button>
+            <PermissionGate code="group:scale">
+              <Button
+                size="small"
+                icon={<PlusOutlined />}
+                loading={scaleUpMutation.isPending}
+                onClick={() => {
+                  scaleUpForm.setFieldsValue({ replicas: (workload?.replicas ?? 0) + 1 });
+                  setScaleUpOpen(true);
+                }}
+              >
+                扩容
+              </Button>
+              <Button
+                size="small"
+                icon={<DeleteOutlined />}
+                loading={scaleDownMutation.isPending}
+                disabled={(workload?.replicas ?? 0) === 0}
+                onClick={() => {
+                  setSelectedRemovePods([]);
+                  setScaleDownOpen(true);
+                }}
+              >
+                缩容
+              </Button>
+            </PermissionGate>
             {group.candidate_release_id ? (
               <Tag color="orange">候选发布中 #{group.candidate_release_id} ({group.candidate_replicas ?? 0})</Tag>
             ) : null}
-            <Button icon={<ReloadOutlined />} loading={restartMutation.isPending} onClick={() => restartMutation.mutate()}>
-              重启
-            </Button>
-            <Button
-              loading={shutdownMutation.isPending}
-              disabled={(workload?.replicas ?? 0) === 0}
-              onClick={() =>
-                confirmDanger({
-                  title: '关机分组',
-                  content: `确定关机分组「${group.display_name || group.name}」？所有副本将缩为 0（关机前副本数会记录，开机时恢复）。`,
-                  okText: '关机',
-                  onOk: () => shutdownMutation.mutateAsync(),
-                })
-              }
-            >
-              关机
-            </Button>
-            <Button
-              loading={startupMutation.isPending}
-              disabled={(workload?.replicas ?? 0) > 0}
-              onClick={() => startupMutation.mutate()}
-            >
-              开机
-            </Button>
-            <Button
-              icon={<EditOutlined />}
-              onClick={() => {
-                setEditOpen(true);
-                editForm.resetFields();
-              }}
-            >
-              编辑
-            </Button>
-            <Button
-              type="primary"
-              icon={<DeploymentUnitOutlined />}
-              disabled={!group?.application_id}
-              onClick={() => setHeaderPublishOpen(true)}
-            >
-              发布
-            </Button>
-            <Button
-              danger
-              icon={<DeleteOutlined />}
-              onClick={() =>
-                confirmDanger({
-                  title: '删除分组',
-                  content: `确定删除分组「${group.display_name || group.name}」吗？删除后该分组下的发布历史将一并清除，此操作不可恢复。`,
-                  okText: '删除',
-                  onOk: () => deleteMutation.mutateAsync(),
-                })
-              }
-            >
-              删除
-            </Button>
+            <PermissionGate code="group:scale">
+              <Button icon={<ReloadOutlined />} loading={restartMutation.isPending} onClick={() => restartMutation.mutate()}>
+                重启
+              </Button>
+              <Button
+                loading={shutdownMutation.isPending}
+                disabled={(workload?.replicas ?? 0) === 0}
+                onClick={() =>
+                  confirmDanger({
+                    title: '关机分组',
+                    content: `确定关机分组「${group.display_name || group.name}」？所有副本将缩为 0（关机前副本数会记录，开机时恢复）。`,
+                    okText: '关机',
+                    onOk: () => shutdownMutation.mutateAsync(),
+                  })
+                }
+              >
+                关机
+              </Button>
+              <Button
+                loading={startupMutation.isPending}
+                disabled={(workload?.replicas ?? 0) > 0}
+                onClick={() => startupMutation.mutate()}
+              >
+                开机
+              </Button>
+            </PermissionGate>
+            <PermissionGate code="group:manage">
+              <Button
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setEditOpen(true);
+                  editForm.resetFields();
+                }}
+              >
+                编辑
+              </Button>
+            </PermissionGate>
+            <PermissionGate code="release:trigger">
+              <Button
+                type="primary"
+                icon={<DeploymentUnitOutlined />}
+                disabled={!group?.application_id}
+                onClick={() => setHeaderPublishOpen(true)}
+              >
+                发布
+              </Button>
+            </PermissionGate>
+            {canViewOps && (
+              <Button icon={<ToolOutlined />} onClick={() => setOpsOpen(true)}>
+                运维
+              </Button>
+            )}
+            <PermissionGate code="group:manage">
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() =>
+                  confirmDanger({
+                    title: '删除分组',
+                    content: `确定删除分组「${group.display_name || group.name}」吗？删除后该分组下的发布历史将一并清除，此操作不可恢复。`,
+                    okText: '删除',
+                    onOk: () => deleteMutation.mutateAsync(),
+                  })
+                }
+              >
+                删除
+              </Button>
+            </PermissionGate>
           </Space>
         )
       }
     >
       <Card loading={isLoading}>
         <Tabs
-          defaultActiveKey="overview"
+          activeKey={activeTab}
+          onChange={onTabChange}
+          items={tabItems}
+        />
+      </Card>
+
+      <Drawer
+        title="运维"
+        open={opsOpen}
+        onClose={() => setOpsOpen(false)}
+        width={880}
+        destroyOnHidden
+      >
+        <Tabs
           items={[
-            { key: 'overview', label: '概览', children: <OverviewTab /> },
-            { key: 'pods', label: 'Pod', children: <PodsTab groupId={groupId} /> },
-            { key: 'configs', label: '配置', children: <ConfigsTab groupId={groupId} applicationId={group?.application_id} /> },
-            { key: 'releases', label: '发布历史', children: <ReleasesTab groupId={groupId} applicationId={group?.application_id} currentImageId={group?.current_image_id} /> },
             { key: 'events', label: '事件', children: <EventsTab groupId={groupId} /> },
             { key: 'yaml', label: 'YAML', children: <YAMLTab groupId={groupId} /> },
           ]}
         />
-      </Card>
+      </Drawer>
 
       <Modal
         title={`编辑分组 - ${group?.display_name || group?.name || ''}`}
@@ -581,6 +640,85 @@ export default function GroupDetailPage() {
           保存 Mesh 配置
         </Button>
       </Form>
+    );
+  }
+
+  function NetworkAccessCard({ group, probePort }: { group: Group; probePort?: number }) {
+    const { message } = App.useApp();
+    const { data: cluster } = useQuery({
+      queryKey: ['cluster', group.cluster_id],
+      queryFn: () => clusterApi.get(group.cluster_id),
+      enabled: !!group.cluster_id,
+    });
+    const { data: stable, isLoading } = useQuery({
+      queryKey: ['group', group.id, 'stable-ips'],
+      queryFn: () => groupApi.listStableIPs(group.id),
+      enabled: !!group.id,
+    });
+    const { profile, cni, npObj } = resolveClusterNetworkMeta(cluster?.metadata);
+    const profileOpt = profile ? getNetworkProfileOption(profile) : undefined;
+    const items = stable?.items ?? [];
+    const capOk = stable?.capability?.ok ?? true;
+    const overlaySecondary = requiresUnderlaySecondary(profile);
+    const accessHint = overlaySecondary
+      ? 'Overlay 网段不可从集群外直连，访问入口为 Multus 副网卡固定 IP。'
+      : profile === 'xlarge-bgp'
+        ? '固定 IP 经 BGP 宣告后三层直连。'
+        : '固定 IP 与办公网同网段直连。';
+
+    const copyAddr = (ip: string) => {
+      const addr = probePort ? `${ip}:${probePort}` : ip;
+      void navigator.clipboard.writeText(addr).then(
+        () => message.success(`已复制 ${addr}`),
+        () => message.error('复制失败'),
+      );
+    };
+
+    return (
+      <Card title="网络与访问" size="small" loading={isLoading}>
+        {!capOk && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="当前集群无法满足固定 IP 直连"
+            description={stable?.capability?.message || '请检查 Multus、CNI 与 Underlay IP 池配置。'}
+          />
+        )}
+        <Descriptions bordered column={2} size="small">
+          <Descriptions.Item label="网络方案">{profileOpt?.label || profile || '未配置（默认开发环境）'}</Descriptions.Item>
+          <Descriptions.Item label="CNI">{cni || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Multus">{npObj?.multus_enabled ? '已开启' : '未开启'}</Descriptions.Item>
+          <Descriptions.Item label="固定 IP">{items.length > 0 ? <Tag color="green">已分配 {items.length}</Tag> : <Tag>未分配</Tag>}</Descriptions.Item>
+          <Descriptions.Item label="访问方式" span={2}>{accessHint}不经 Service / NodePort / LB。</Descriptions.Item>
+          <Descriptions.Item label="访问入口" span={2}>
+            {items.length === 0 ? (
+              <span style={{ color: '#888' }}>{probePort ? '发布后显示 稳定IP:' + probePort : '发布后显示稳定 IP；应用未配置探活端口时仅显示 IP'}</span>
+            ) : (
+              <Space wrap>
+                {items.map((it: GroupStableIP) => {
+                  const addr = probePort ? `${it.ip}:${probePort}` : it.ip;
+                  return (
+                    <Space key={`${it.replica_index}-${it.ip}`} size={4}>
+                      <Typography.Text copyable={{ text: addr }} code>
+                        {addr}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">#{it.replica_index}</Typography.Text>
+                    </Space>
+                  );
+                })}
+              </Space>
+            )}
+          </Descriptions.Item>
+        </Descriptions>
+        {items.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <Button size="small" icon={<CopyOutlined />} onClick={() => copyAddr(items[0].ip)}>
+              复制首个访问地址
+            </Button>
+          </div>
+        )}
+      </Card>
     );
   }
 
@@ -809,19 +947,25 @@ export default function GroupDetailPage() {
           <Descriptions.Item label="GPU 类型">{resources?.gpu_type || '-'}</Descriptions.Item>
         </Descriptions>
 
-        <Card title="资源配置" size="small">
-          <ResourceConfigCard
-            group={group}
-            onSaved={() => queryClient.invalidateQueries({ queryKey: ['group', group.id] })}
-          />
-        </Card>
+        <NetworkAccessCard group={group} probePort={app?.probe?.port} />
 
-        <Card title="Mesh 配置" size="small">
-          <MeshConfigCard
-            group={group}
-            onSaved={() => queryClient.invalidateQueries({ queryKey: ['group', group.id] })}
-          />
-        </Card>
+        {canManageGroup && (
+          <>
+            <Card title="资源配置" size="small">
+              <ResourceConfigCard
+                group={group}
+                onSaved={() => queryClient.invalidateQueries({ queryKey: ['group', group.id] })}
+              />
+            </Card>
+
+            <Card title="Mesh 配置" size="small">
+              <MeshConfigCard
+                group={group}
+                onSaved={() => queryClient.invalidateQueries({ queryKey: ['group', group.id] })}
+              />
+            </Card>
+          </>
+        )}
       </Space>
     );
   }
@@ -859,6 +1003,20 @@ export default function GroupDetailPage() {
       enabled: !!groupId,
       refetchInterval: 5000,
     });
+    const { data: cluster } = useQuery({
+      queryKey: ['cluster', group?.cluster_id],
+      queryFn: () => clusterApi.get(group!.cluster_id),
+      enabled: !!group?.cluster_id,
+    });
+    const { data: stable } = useQuery({
+      queryKey: ['group', groupId, 'stable-ips'],
+      queryFn: () => groupApi.listStableIPs(groupId),
+      enabled: !!groupId,
+    });
+    const { profile } = resolveClusterNetworkMeta(cluster?.metadata);
+    const overlaySecondary = requiresUnderlaySecondary(profile);
+    const stableIPSet = new Set((stable?.items ?? []).map((it) => it.ip));
+    const probePort = app?.probe?.port;
 
     const { data: logs } = useQuery({
       queryKey: ['group', groupId, 'pod-logs', logDrawer.pod, logDrawer.container],
@@ -942,7 +1100,27 @@ export default function GroupDetailPage() {
         render: (_: unknown, r) => renderAppReadyStatus(r),
       },
       { title: '节点', dataIndex: 'node_name', width: 160, render: (v?: string) => v || '-' },
-      { title: 'IP', dataIndex: 'pod_ip', width: 140, render: (v?: string) => v || '-' },
+      {
+        title: 'IP',
+        dataIndex: 'pod_ip',
+        width: 200,
+        render: (v?: string) => {
+          const ip = v || '';
+          const pinned = ip && stableIPSet.has(ip);
+          return (
+            <Space size={4} wrap>
+              <span>{ip || '-'}</span>
+              {pinned ? <Tag color="green">固定</Tag> : null}
+              {!pinned && overlaySecondary && stableIPSet.size > 0 ? (
+                <Tooltip title="此列为集群默认网卡 IP；对外直连请用「网络与访问」中的副网卡固定 IP">
+                  <Tag>集群网卡</Tag>
+                </Tooltip>
+              ) : null}
+              {!pinned && !overlaySecondary && stableIPSet.size > 0 && ip ? <Tag color="orange">非固定</Tag> : null}
+            </Space>
+          );
+        },
+      },
       { title: '重启', dataIndex: 'restart_count', width: 80, align: 'center' },
       {
         title: '运行时长',
@@ -953,22 +1131,24 @@ export default function GroupDetailPage() {
       {
         title: '操作',
         key: 'actions',
-        width: 360,
+        width: 440,
         render: (_, r) => {
           const containers = (r as any).containers as Array<{ name: string; image: string }> | undefined;
           const containerName = containers?.[0]?.name;
           return (
             <Space size="small" wrap>
-              <Button
-                type="link"
-                size="small"
-                icon={<ReloadOutlined />}
-                disabled={!r.name}
-                loading={restartPodMutation.isPending}
-                onClick={() => restartPodMutation.mutate(r.name)}
-              >
-                重启
-              </Button>
+              {canScale && (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  disabled={!r.name}
+                  loading={restartPodMutation.isPending}
+                  onClick={() => restartPodMutation.mutate(r.name)}
+                >
+                  重启
+                </Button>
+              )}
               <Button
                 type="link"
                 size="small"
@@ -978,35 +1158,59 @@ export default function GroupDetailPage() {
               >
                 日志
               </Button>
+              {canExec && (
+                <>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<CodeOutlined />}
+                    disabled={!r.name}
+                    onClick={() => setTermDrawer({ open: true, pod: r.name, container: containerName })}
+                  >
+                    WebSSH
+                  </Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<DeploymentUnitOutlined />}
+                    disabled={!r.name}
+                    onClick={() => setFileDrawer({ open: true, pod: r.name, container: containerName })}
+                  >
+                    文件
+                  </Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<DesktopOutlined />}
+                    disabled={!r.name}
+                    onClick={() => setNetDrawer({ open: true, pod: r.name, container: containerName })}
+                  >
+                    网络命令
+                  </Button>
+                </>
+              )}
               <Button
                 type="link"
                 size="small"
-                icon={<CodeOutlined />}
-                disabled={!r.name}
-                onClick={() => setTermDrawer({ open: true, pod: r.name, container: containerName })}
+                icon={<CopyOutlined />}
+                disabled={!r.pod_ip && stableIPSet.size === 0}
+                onClick={() => {
+                  const direct = r.pod_ip && stableIPSet.has(r.pod_ip) ? r.pod_ip : (stable?.items?.[0]?.ip || r.pod_ip);
+                  if (!direct) {
+                    message.warning('暂无访问地址');
+                    return;
+                  }
+                  const addr = probePort ? `${direct}:${probePort}` : direct;
+                  void navigator.clipboard.writeText(addr).then(
+                    () => message.success(`已复制 ${addr}`),
+                    () => message.error('复制失败'),
+                  );
+                }}
               >
-                WebSSH
-              </Button>
-              <Button
-                type="link"
-                size="small"
-                icon={<DeploymentUnitOutlined />}
-                disabled={!r.name}
-                onClick={() => setFileDrawer({ open: true, pod: r.name, container: containerName })}
-              >
-                文件
-              </Button>
-              <Button
-                type="link"
-                size="small"
-                icon={<DesktopOutlined />}
-                disabled={!r.name}
-                onClick={() => setNetDrawer({ open: true, pod: r.name, container: containerName })}
-              >
-                网络命令
+                复制访问地址
               </Button>
               {/* AI 诊断：仅在 Pod 未就绪时展示（ready=false 或 phase 非 Running/Succeeded 或频繁重启）。 */}
-              {(!r.ready || (r.restart_count && r.restart_count >= 3) || (r.phase && !['Running', 'Succeeded'].includes(r.phase))) && (
+              {canDiagnose && (!r.ready || (r.restart_count && r.restart_count >= 3) || (r.phase && !['Running', 'Succeeded'].includes(r.phase))) && (
                 <Button
                   type="link"
                   size="small"
@@ -1394,6 +1598,7 @@ export default function GroupDetailPage() {
           size="small"
           title={currentBinding ? `配置（来自绑定：${boundConfigSet?.name ?? `#${currentBinding.config_set_id}`}）` : '配置'}
           extra={
+            <PermissionGate code="config:manage">
             <Space>
               {currentBinding ? (
                 <>
@@ -1445,6 +1650,7 @@ export default function GroupDetailPage() {
                 </>
               )}
             </Space>
+            </PermissionGate>
           }
         >
           {currentBinding ? (
@@ -1738,16 +1944,18 @@ export default function GroupDetailPage() {
 
     return (
       <>
-        <div style={{ marginBottom: 16, textAlign: 'right' }}>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            disabled={!applicationId}
-            onClick={() => setNewOpen(true)}
-          >
-            新建发布
-          </Button>
-        </div>
+        {canRelease && (
+          <div style={{ marginBottom: 16, textAlign: 'right' }}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              disabled={!applicationId}
+              onClick={() => setNewOpen(true)}
+            >
+              新建发布
+            </Button>
+          </div>
+        )}
         <Table<Release>
           rowKey="id"
           loading={isLoading}

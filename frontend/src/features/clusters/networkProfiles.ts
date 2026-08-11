@@ -17,28 +17,30 @@ export const NETWORK_PROFILE_OPTIONS: NetworkProfileOption[] = [
   {
     value: 'dev-single',
     label: '开发环境（单集群）',
-    description: '单机 kind/k3s，默认 Overlay，端口走 NodePort 暴露。无需额外 CNI 配置，适合本地开发。',
+    description:
+      '单机 kind/k3s。Overlay 仅供集群内通信；对外访问走 Multus Underlay 副网卡固定 IP 直连。必须开启 Multus 并配置 macvlan/ipvlan IP 池。Flannel 单独不可用。',
     supportsUnderlay: false,
     cniOptions: [
-      { value: 'calico', label: 'Calico（本地 k3s 默认，支持静态 IP）' },
-      { value: 'flannel', label: 'Flannel / kindnet（无静态 IP）' },
+      { value: 'calico', label: 'Calico（集群内 Overlay；直连仍需 Multus 副网卡）' },
+      { value: 'flannel', label: 'Flannel / kindnet（无静态 IP，必须配 Multus+Underlay 池）' },
     ],
   },
   {
     value: 'medium-overlay',
     label: '中型集群（Overlay）',
-    description: '标准 Overlay（Flannel/Calico VXLAN），多集群独立 CIDR 互不通信或经网关。中小规模生产首选。',
+    description:
+      '标准 Overlay 供集群内通信；对外访问走 Multus Underlay 副网卡固定 IP 直连。必须开启 Multus 并配置 macvlan/ipvlan IP 池。Flannel 单独不支持静态 IP。',
     supportsUnderlay: false,
     cniOptions: [
-      { value: 'flannel', label: 'Flannel VXLAN' },
-      { value: 'calico', label: 'Calico VXLAN' },
+      { value: 'flannel', label: 'Flannel VXLAN（不可单独用于直连，需 Multus）' },
+      { value: 'calico', label: 'Calico VXLAN（集群内 Overlay；直连仍需 Multus 副网卡）' },
     ],
   },
   {
     value: 'large-underlay',
     label: '大型集群（Underlay 直连）',
     description:
-      'Underlay（Macvlan/IPVLAN），Pod 拿物理局域网 IP，与办公 PC 同网段直连。多集群共享超网，平台全局 IPAM 保证 IP 唯一。无隧道纯二层/三层转发。',
+      'Underlay（Macvlan/IPVLAN），Pod 拿物理局域网固定 IP，与办公 PC 同网段直连。多集群共享超网，平台全局 IPAM 保证 IP 唯一。无隧道纯二层/三层转发。',
     supportsUnderlay: true,
     cniOptions: [
       { value: 'macvlan', label: 'Macvlan（Pod 独立 MAC，PC 同网段直连）' },
@@ -50,7 +52,7 @@ export const NETWORK_PROFILE_OPTIONS: NetworkProfileOption[] = [
     value: 'xlarge-bgp',
     label: '超大型集群（BGP 路由）',
     description:
-      'Calico BGP-only（无封装 L3 路由），Pod 路由自动宣告到核心交换机/Route Reflector。适合超大规模、频繁扩缩，跨集群经 BGP 互联。',
+      'Calico/Cilium BGP-only（无封装 L3 路由），Pod 固定 IP 经 BGP 宣告到核心交换机，办公网三层直连。适合超大规模、频繁扩缩，跨集群经 BGP 互联。',
     supportsUnderlay: false,
     cniOptions: [
       { value: 'calico', label: 'Calico BGP-only' },
@@ -63,6 +65,14 @@ export function getNetworkProfileOption(profile: NetworkProfile): NetworkProfile
 }
 
 /** 从集群 metadata 解析有效的 network_profile 与 CNI（空字符串视为未配置）。 */
+export function requiresUnderlaySecondary(profile?: NetworkProfile | string) {
+  return !profile || profile === 'dev-single' || profile === 'medium-overlay';
+}
+
+export function cniSupportsStaticIP(cni?: string) {
+  return ['calico', 'cilium', 'whereabouts', 'macvlan', 'ipvlan', 'kube-ovn', 'calico-ipam'].includes(cni || '');
+}
+
 export function resolveClusterNetworkMeta(metadata?: Record<string, any>) {
   const np = metadata?.network_profile;
   const profile = (typeof np === 'string' ? np : np?.profile) as NetworkProfile | undefined;
@@ -102,6 +112,6 @@ export function buildNetworkProfileConfig(
   if (bgp_peer_ip) profileConfig.bgp_peer_ip = bgp_peer_ip;
   if (bgp_peer_asn) profileConfig.bgp_peer_asn = Number(bgp_peer_asn);
   if (local_asn) profileConfig.local_asn = Number(local_asn);
-  if (multus_enabled) profileConfig.multus_enabled = true;
+  profileConfig.multus_enabled = !!multus_enabled && multus_enabled !== 0;
   return profileConfig;
 }

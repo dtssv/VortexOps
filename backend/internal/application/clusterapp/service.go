@@ -489,11 +489,11 @@ func (s *Service) AllocateForGroup(ctx context.Context, groupID, clusterID int64
 	if len(pools) == 0 {
 		return nil, fmt.Errorf("no ip pool for cluster %s", s.clusterLabel(ctx, clusterID))
 	}
-	// Underlay profile：优先选 underlay provider（macvlan/ipvlan）的池。
-	// 解析集群网络方案；解析失败时按既有逻辑（不排序），兼容老集群。
+	// 直连固定 IP：Overlay/dev 只从 underlay 池分配（副网卡物理 IP）；
+	// large-underlay 优先 underlay 池。解析失败时按既有逻辑（不排序），兼容老集群。
 	profile, perr := s.GetNetworkProfile(ctx, clusterID)
-	if perr == nil && profile.SupportsUnderlay() {
-		pools = sortPoolsUnderlayFirst(pools)
+	if perr == nil {
+		pools = preferDirectAccessPools(pools, profile)
 	}
 	// Phase 1: 单事务批量分配（SELECT FOR UPDATE SKIP LOCKED LIMIT n）。
 	// 逐池尝试，首个能分配到 n 个的池即用。
@@ -530,8 +530,8 @@ func (s *Service) allocateIncremental(ctx context.Context, groupID, clusterID in
 		return nil, fmt.Errorf("no ip pool for cluster %s", s.clusterLabel(ctx, clusterID))
 	}
 	profile, perr := s.GetNetworkProfile(ctx, clusterID)
-	if perr == nil && profile.SupportsUnderlay() {
-		pools = sortPoolsUnderlayFirst(pools)
+	if perr == nil {
+		pools = preferDirectAccessPools(pools, profile)
 	}
 	for _, pool := range pools {
 		allocs, aerr := s.repo.AllocateIPsBatch(ctx, pool.ID, clusterID, count, cluster.IPAllocGroup, groupID)
@@ -560,16 +560,48 @@ func (s *Service) allocateIncremental(ctx context.Context, groupID, clusterID in
 	return nil, fmt.Errorf("no ip pool with %d available ips for cluster %s (incremental)", count, s.clusterLabel(ctx, clusterID))
 }
 
-// sortPoolsUnderlayFirst 把 macvlan/ipvlan provider 的池排到前面（不改原切片）。
+// preferDirectAccessPools 按网络方案挑选用于「固定 IP 直连」的池。
+// Overlay/dev：只保留 macvlan/ipvlan（副网卡物理 IP）；underlay：underlay 池优先。
+func preferDirectAccessPools(pools []*cluster.IPPool, profile *networkprofile.ProfileConfig) []*cluster.IPPool {
+	if profile == nil {
+		return pools
+	}
+	if profile.RequiresUnderlaySecondary() {
+		if filtered := filterUnderlayPools(pools); len(filtered) > 0 {
+			return filtered
+		}
+		return pools
+	}
+	if profile.SupportsUnderlay() {
+		return sortPoolsUnderlayFirst(pools)
+	}
+	return pools
+}
+
+func filterUnderlayPools(pools []*cluster.IPPool) []*cluster.IPPool {
+	out := make([]*cluster.IPPool, 0, len(pools))
+	for _, p := range pools {
+		if isUnderlayPoolProvider(p.Provider) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func isUnderlayPoolProvider(p cluster.IPPoolProvider) bool {
+	return p == cluster.IPPoolMacvlan || p == cluster.IPPoolIPVLAN || p == cluster.IPPoolKubeOVN
+}
+
+// sortPoolsUnderlayFirst 把 macvlan/ipvlan/kube-ovn provider 的池排到前面（不改原切片）。
 func sortPoolsUnderlayFirst(pools []*cluster.IPPool) []*cluster.IPPool {
 	out := make([]*cluster.IPPool, 0, len(pools))
 	for _, p := range pools {
-		if p.Provider == cluster.IPPoolMacvlan || p.Provider == cluster.IPPoolIPVLAN {
+		if isUnderlayPoolProvider(p.Provider) {
 			out = append(out, p)
 		}
 	}
 	for _, p := range pools {
-		if p.Provider != cluster.IPPoolMacvlan && p.Provider != cluster.IPPoolIPVLAN {
+		if !isUnderlayPoolProvider(p.Provider) {
 			out = append(out, p)
 		}
 	}
@@ -801,6 +833,35 @@ func (s *Service) ListIPPools(ctx context.Context, clusterID int64) ([]*cluster.
 	return items, nil
 }
 
+// ListGroupStableIPs 列出分组已分配的稳定 IP（按 replica_index 升序）。
+func (s *Service) ListGroupStableIPs(ctx context.Context, groupID int64) ([]*cluster.IPAllocation, error) {
+	items, err := s.repo.ListAllocationsByResource(ctx, cluster.IPAllocGroup, groupID)
+	if err != nil {
+		return nil, apperr.Internal("list group stable ips", err)
+	}
+	return items, nil
+}
+
+// CheckDirectAccessCapability 校验集群是否具备固定 IP + Pod 直连能力。
+func (s *Service) CheckDirectAccessCapability(ctx context.Context, clusterID int64) error {
+	profile, err := s.GetNetworkProfile(ctx, clusterID)
+	if err != nil {
+		return err
+	}
+	pools, err := s.repo.ListIPPools(ctx, clusterID)
+	if err != nil {
+		return apperr.Internal("list ip pools", err)
+	}
+	providers := make([]string, 0, len(pools))
+	for _, p := range pools {
+		providers = append(providers, string(p.Provider))
+	}
+	if err := networkprofile.ValidateDirectAccessCapability(profile, providers); err != nil {
+		return apperr.BusinessRule(err.Error(), err)
+	}
+	return nil
+}
+
 // DeleteIPPool 软删除 IP 池。
 func (s *Service) DeleteIPPool(ctx context.Context, id, actorID int64) error {
 	if err := s.repo.DeleteIPPool(ctx, id, actorID); err != nil {
@@ -962,10 +1023,10 @@ func (s *Service) allocateSingleIPForGroup(ctx context.Context, groupID, cluster
 	if len(pools) == 0 {
 		return "", apperr.BusinessRule(fmt.Sprintf("no ip pool for cluster %s", s.clusterLabel(ctx, clusterID)), cluster.ErrIPExhausted)
 	}
-	// Underlay profile：优先 underlay 池。
+	// 直连固定 IP：按 profile 优先/仅选 underlay 池。
 	profile, perr := s.GetNetworkProfile(ctx, clusterID)
-	if perr == nil && profile.SupportsUnderlay() {
-		pools = sortPoolsUnderlayFirst(pools)
+	if perr == nil {
+		pools = preferDirectAccessPools(pools, profile)
 	}
 	for _, pool := range pools {
 		allocs, aerr := s.repo.AllocateIPsBatch(ctx, pool.ID, clusterID, 1, cluster.IPAllocGroup, groupID)

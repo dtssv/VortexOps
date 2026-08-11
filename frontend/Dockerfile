@@ -3,6 +3,9 @@
 FROM node:20.18.1-alpine AS builder
 WORKDIR /app
 
+# 国内网络访问 npm 官方源较慢，切换淘宝镜像加速依赖安装。
+RUN npm config set registry https://registry.npmmirror.com
+
 COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 

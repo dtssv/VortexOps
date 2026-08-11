@@ -81,33 +81,28 @@ export const useAuthStore = create<AuthState>()(
 
         async fetchProfileAndMenus() {
           set({ loading: true });
-          // 分别请求 user 与 menus，避免一个失败导致另一个也拿不到。
-          // 关键：无论 menus 是否成功，都要把 initialized 置 true，否则
-          // RequireAuth 会一直 return null（卡在未初始化，整页空白）。
-          // menus 失败时降级为空数组 → DynamicMenu 自动回退到 FALLBACK_ITEMS。
+          // 分别请求，避免一个失败拖垮整次初始化。
+          // 权限码必须走 /me/permissions（含 action），不能从菜单树反推。
+          // menus/permissions 失败时降级为空：无权限不展示，禁止全量兜底菜单。
           let user: User | null = get().user;
           let menus: Menu[] = [];
+          let permissions: string[] = [];
           try {
             user = await apiGet<User>('/users/me');
           } catch {
             // user 拉取失败可能是 token 过期；若 refresh 也失败，全局 401 拦截会跳登录。
-            // 此处不抛错，继续尝试 menus，最终仍标记 initialized。
           }
           try {
             menus = (await apiGet<Menu[]>('/me/menus')) || [];
           } catch {
-            // 菜单拉取失败：降级空数组，DynamicMenu 用 FALLBACK_ITEMS。
+            menus = [];
           }
-          const perms = new Set<string>();
-          const walk = (nodes: Menu[]) => {
-            for (const n of nodes) {
-              if (n.permission_code) perms.add(n.permission_code);
-              if (n.children) walk(n.children);
-            }
-          };
-          walk(menus);
-          set({ user, menus, permissions: Array.from(perms), initialized: true });
-          set({ loading: false });
+          try {
+            permissions = (await apiGet<string[]>('/me/permissions')) || [];
+          } catch {
+            permissions = [];
+          }
+          set({ user, menus, permissions, initialized: true, loading: false });
         },
 
         async logout() {

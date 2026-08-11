@@ -20,6 +20,10 @@ FROM golang:1.26.4-alpine AS builder
 # git/ca-certificates 供 go module 下载与校验。
 RUN apk add --no-cache git ca-certificates
 
+# 国内网络无法访问 proxy.golang.org，使用 goproxy.cn 加速模块下载。
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
 WORKDIR /src
 
 # 先拷贝依赖清单，利用层缓存加速依赖下载。

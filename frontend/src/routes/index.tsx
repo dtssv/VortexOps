@@ -93,6 +93,7 @@ export default function AppRoutes() {
             </Lazy>
           }
         />
+        <Route path="dashboard" element={<Lazy><DashboardPage /></Lazy>} />
         <Route path="workspaces" element={<Lazy><WorkspaceListPage /></Lazy>} />
         <Route path="workspaces/:id" element={<Lazy><WorkspaceDetailPage /></Lazy>} />
         <Route path="applications" element={<Lazy><ApplicationListPage /></Lazy>} />

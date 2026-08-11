@@ -400,8 +400,12 @@ func (s *Service) isInterrupted(ctx context.Context, releaseID int64) bool {
 func (s *Service) executeRollingRelease(ctx context.Context, rel *release.Release, g *application.Group, img *build.Image, operatorID int64) {
 	startedAt := rel.StartedAt
 
-	// 1. 分配稳定 IP（始终分配；软降级：失败不阻断发布）。
-	stableIPs := s.allocateStableIPs(ctx, rel, g, operatorID)
+	// 1. 分配稳定 IP（硬失败：无法固定 IP / 无法直连则发布失败）。
+	stableIPs, err := s.allocateStableIPs(ctx, rel, g, operatorID)
+	if err != nil {
+		s.failRelease(ctx, rel, fmt.Sprintf("stable IP: %v", err), operatorID, startedAt)
+		return
+	}
 
 	// 2. 解析生效配置（互斥：绑定配置集优先，否则本地配置）。
 	cfg, err := s.resolveGroupConfig(ctx, g)
@@ -781,18 +785,30 @@ func (s *Service) syncDNSAfterRelease(ctx context.Context, rel *release.Release,
 	}
 }
 
-// allocateStableIPs 始终尝试分配稳定 IP；软降级：失败不阻断发布，仅记录事件。
+// allocateStableIPs 分配稳定 IP；失败阻断发布（固定 IP + Pod 直连为硬约束）。
 // 分配成功后同时清理该 group 历史遗留的 Service/Ingress/NetworkPolicy（架构迁移期回收旧资源）。
-func (s *Service) allocateStableIPs(ctx context.Context, rel *release.Release, g *application.Group, operatorID int64) []string {
+func (s *Service) allocateStableIPs(ctx context.Context, rel *release.Release, g *application.Group, operatorID int64) ([]string, error) {
+	if rel.Replicas <= 0 {
+		return nil, nil
+	}
 	if s.ipAllocator == nil {
-		s.appendEvent(ctx, rel.ID, "stable_ip_skip", "ipAllocator not configured, IP will NOT be preserved", operatorID)
-		return nil
+		s.appendEvent(ctx, rel.ID, "stable_ip_skip", "ipAllocator not configured, cannot assign stable IP", operatorID)
+		return nil, fmt.Errorf("ipAllocator not configured, cannot assign stable IP")
+	}
+	if err := s.validateDirectAccess(ctx, g); err != nil {
+		s.appendEvent(ctx, rel.ID, "stable_ip_capability_failed", err.Error(), operatorID)
+		return nil, err
 	}
 	ips, err := s.ipAllocator.AllocateForGroup(ctx, g.ID, g.ClusterID, rel.Replicas)
 	if err != nil {
 		s.appendEvent(ctx, rel.ID, "stable_ip_alloc_failed",
-			fmt.Sprintf("allocate stable IPs for group %s failed: %v (IP will NOT be preserved, release continues)", groupLabel(g), err), operatorID)
-		return nil
+			fmt.Sprintf("allocate stable IPs for group %s failed: %v", groupLabel(g), err), operatorID)
+		return nil, fmt.Errorf("allocate stable IPs for group %s: %w", groupLabel(g), err)
+	}
+	if len(ips) < rel.Replicas {
+		msg := fmt.Sprintf("allocated %d/%d stable IPs for group %s (need full replica set for direct access)", len(ips), rel.Replicas, groupLabel(g))
+		s.appendEvent(ctx, rel.ID, "stable_ip_alloc_failed", msg, operatorID)
+		return nil, fmt.Errorf("%s", msg)
 	}
 	profile := s.resolveNetworkProfile(ctx, g)
 	cni := "unknown"
@@ -800,11 +816,28 @@ func (s *Service) allocateStableIPs(ctx context.Context, rel *release.Release, g
 		cni = string(profile.CNI)
 	}
 	s.appendEvent(ctx, rel.ID, "stable_ip_allocated",
-		fmt.Sprintf("allocated %d stable IPs %v (cni=%s); 注解生效需集群已安装对应 CNI，Flannel 不支持静态 IP",
+		fmt.Sprintf("allocated %d stable IPs %v (cni=%s); 对外以 Pod IP 直连，不经 Service/NodePort",
 			len(ips), ips, cni), operatorID)
 	// 清理历史遗留的 Service/Ingress/NetworkPolicy（架构迁移：不再创建这些资源）。
 	s.cleanupLegacyNetworkResources(ctx, rel, g, operatorID)
-	return ips
+	return ips, nil
+}
+
+// validateDirectAccess 发布前校验集群具备固定 IP + 对外直连能力。
+func (s *Service) validateDirectAccess(ctx context.Context, g *application.Group) error {
+	profile := s.resolveNetworkProfile(ctx, g)
+	var providers []string
+	if s.clusterRepo != nil {
+		pools, err := s.clusterRepo.ListIPPools(ctx, g.ClusterID)
+		if err != nil {
+			return fmt.Errorf("list ip pools: %w", err)
+		}
+		providers = make([]string, 0, len(pools))
+		for _, p := range pools {
+			providers = append(providers, string(p.Provider))
+		}
+	}
+	return networkprofile.ValidateDirectAccessCapability(profile, providers)
 }
 
 // cleanupLegacyNetworkResources 删除该 group 历史遗留的 Service/Ingress/NetworkPolicy。
@@ -840,8 +873,10 @@ func (s *Service) cleanupLegacyNetworkResources(ctx context.Context, rel *releas
 
 // prepareRelease 分配稳定 IP + 解析生效配置 + imagePullSecret（候选与主共享）。
 func (s *Service) prepareRelease(ctx context.Context, rel *release.Release, g *application.Group) (stableIPs []string, cfg *workload.ResolvedConfig, imagePullSecrets []string, err error) {
-	// 始终分配稳定 IP；软降级：失败不阻断发布。
-	stableIPs = s.allocateStableIPs(ctx, rel, g, rel.TriggeredBy)
+	stableIPs, err = s.allocateStableIPs(ctx, rel, g, rel.TriggeredBy)
+	if err != nil {
+		return
+	}
 	cfg, merr := s.resolveGroupConfig(ctx, g)
 	if merr != nil {
 		err = fmt.Errorf("resolve config: %w", merr)

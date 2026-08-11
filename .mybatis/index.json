@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "timestamp": 1786434341909,
+  "projectRoot": "/Users/zyf/workspace/go/VortexOps",
+  "entries": [
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/RedisConfig.class",
+      "mtime": 1786094750143.4524,
+      "size": 2056
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/persistence/mybatis/MybatisPlusConfig.class",
+      "mtime": 1786094752400.7385,
+      "size": 2821
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/WebMvcConfig.class",
+      "mtime": 1786096444422.0005,
+      "size": 5440
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/OpenApiConfig.class",
+      "mtime": 1786355013653.521,
+      "size": 2217
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/trace/TraceAsyncConfig.class",
+      "mtime": 1786428367852.9368,
+      "size": 2455
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/TraceflowApplication.class",
+      "mtime": 1786434341179.4207,
+      "size": 1612
+    }
+  ]
+}

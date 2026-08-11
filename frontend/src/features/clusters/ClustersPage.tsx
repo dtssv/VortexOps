@@ -565,6 +565,25 @@ export default function ClustersPage() {
                         <Select options={opt.cniOptions} placeholder="选择集群已安装的 CNI" />
                       </Form.Item>
                     )}
+                    {(profile === 'dev-single' || profile === 'medium-overlay') && (
+                      <>
+                        <Form.Item
+                          name="multus_enabled"
+                          label="Multus 副网卡"
+                          extra="必须开启：Overlay 网段不可从集群外直连，业务口走 Underlay 固定 IP"
+                        >
+                          <Select options={[{ label: '关闭', value: 0 }, { label: '开启', value: 1 }]} />
+                        </Form.Item>
+                        <Space style={{ width: '100%' }} size="middle">
+                          <Form.Item name="vlan_id" label="VLAN ID" style={{ flex: 1 }}>
+                            <Input placeholder="如 100，对应 NAD 名 macvlan-100" />
+                          </Form.Item>
+                          <Form.Item name="parent_interface" label="父接口" style={{ flex: 1 }}>
+                            <Input placeholder="eth0 / eno1" />
+                          </Form.Item>
+                        </Space>
+                      </>
+                    )}
                     {profile === 'large-underlay' && (
                       <>
                         <Space style={{ width: '100%' }} size="middle">
@@ -586,7 +605,7 @@ export default function ClustersPage() {
                             <Input placeholder="如 10.1.0.1" />
                           </Form.Item>
                         </Space>
-                        <Form.Item name="multus_enabled" valuePropName="checked" label="Multus 双网卡" extra="开启后默认网卡走 Overlay（保留 Service/ClusterIP），副网卡走 Underlay 直连">
+                        <Form.Item name="multus_enabled" valuePropName="checked" label="Multus 双网卡" extra="开启后默认网卡走 Overlay（集群内通信），副网卡走 Underlay 固定 IP 直连">
                           <Select options={[{ label: '关闭', value: 0 }, { label: '开启', value: 1 }]} />
                         </Form.Item>
                       </>
@@ -737,6 +756,25 @@ export default function ClustersPage() {
                         <Select options={opt.cniOptions} placeholder="选择集群已安装的 CNI" />
                       </Form.Item>
                     )}
+                    {(profile === 'dev-single' || profile === 'medium-overlay') && (
+                      <>
+                        <Form.Item
+                          name="multus_enabled"
+                          label="Multus 副网卡"
+                          extra="必须开启：Overlay 网段不可从集群外直连，业务口走 Underlay 固定 IP"
+                        >
+                          <Select options={[{ label: '关闭', value: 0 }, { label: '开启', value: 1 }]} />
+                        </Form.Item>
+                        <Space style={{ width: '100%' }} size="middle">
+                          <Form.Item name="vlan_id" label="VLAN ID" style={{ flex: 1 }}>
+                            <Input placeholder="如 100，对应 NAD 名 macvlan-100" />
+                          </Form.Item>
+                          <Form.Item name="parent_interface" label="父接口" style={{ flex: 1 }}>
+                            <Input placeholder="eth0 / eno1" />
+                          </Form.Item>
+                        </Space>
+                      </>
+                    )}
                     {profile === 'large-underlay' && (
                       <>
                         <Space style={{ width: '100%' }} size="middle">
@@ -846,10 +884,10 @@ export default function ClustersPage() {
         {(() => {
           const { profile, cni } = resolveClusterNetworkMeta(ipTargetCluster?.metadata);
           const profileOpt = profile ? getNetworkProfileOption(profile) : undefined;
-          const supportsStaticIP = ['whereabouts', 'calico', 'calico-ipam', 'kube-ovn', 'macvlan', 'ipvlan'].includes(cni || '');
+          const overlayDirect = !profile || profile === 'dev-single' || profile === 'medium-overlay';
           return (
             <Alert
-              type={!profile || profile === 'dev-single' ? 'warning' : !cni ? 'info' : supportsStaticIP ? 'success' : 'warning'}
+              type={overlayDirect || !cni ? 'warning' : 'success'}
               showIcon
               style={{ marginBottom: 12 }}
               message={
@@ -859,11 +897,11 @@ export default function ClustersPage() {
                 </span>
               }
               description={
-                supportsStaticIP
-                  ? '该集群 CNI 支持固定 Pod IP。新建 IP 池时 Provider 应与 CNI 匹配（macvlan/ipvlan 池用于 underlay，whereabouts/calico-ipam/kube-ovn 用于 overlay）。'
+                overlayDirect
+                  ? 'Overlay/开发集群的 Pod Overlay IP 不可从集群外直连。请开启 Multus，并新建 macvlan/ipvlan Underlay IP 池作为业务口固定 IP。Flannel 单独不支持静态 IP。'
                   : profile === 'large-underlay'
-                  ? 'underlay 集群但未指定 CNI，请在集群编辑里补全 CNI（macvlan/ipvlan/kube-ovn），否则固定 IP 无法生效。'
-                  : '该集群 CNI 不支持固定 Pod IP（Flannel/kindnet 无静态 IP 能力）。如需固定 IP，请改集群 network_profile 为 medium-overlay+calico 或 large-underlay+macvlan，并确保集群已安装对应 CNI。'
+                  ? 'Underlay 集群：新建 IP 池 Provider 应与 CNI 匹配（macvlan/ipvlan/kube-ovn），Pod 拿物理固定 IP 直连。'
+                  : 'BGP 集群：新建 calico-ipam/whereabouts IP 池，Pod 固定 IP 经 BGP 宣告后三层直连。'
               }
             />
           );

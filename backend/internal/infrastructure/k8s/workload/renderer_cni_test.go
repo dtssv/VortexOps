@@ -1,6 +1,7 @@
 package workload
 
 import (
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -8,6 +9,23 @@ import (
 	"github.com/vortexops/vortexops/internal/domain/application"
 	"github.com/vortexops/vortexops/internal/domain/networkprofile"
 )
+
+func TestInjectCNIAnnotations_OverlayMultus(t *testing.T) {
+	ann := map[string]string{}
+	injectCNIAnnotations(ann, []string{"10.1.1.5"}, &networkprofile.ProfileConfig{
+		Profile:       networkprofile.ProfileDevSingle,
+		CNI:           networkprofile.CNIFlannel,
+		MultusEnabled: true,
+		VLANID:        100,
+	})
+	got := ann["k8s.v1.cni.cncf.io/networks"]
+	if !strings.Contains(got, "macvlan-100") || !strings.Contains(got, "10.1.1.5") {
+		t.Fatalf("expected multus NAD annotation, got %q", got)
+	}
+	if _, ok := ann["cni.projectcalico.org/ipAddrs"]; ok {
+		t.Fatal("overlay secondary should not pin calico overlay IP")
+	}
+}
 
 func TestInjectCNIAnnotations_Cilium(t *testing.T) {
 	ann := map[string]string{}

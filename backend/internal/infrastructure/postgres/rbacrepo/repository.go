@@ -917,22 +917,29 @@ func (r *Repository) ListRoleIDsForUser(ctx context.Context, userID int64, works
 		}
 		roleIDs = append(roleIDs, rid)
 	}
-	// workspace 角色（若指定 workspace）。
+	// workspace 角色：指定空间则只取该空间；workspaceID=0 时聚合用户加入的全部空间。
+	// 后者供 /me/menus、/me/permissions 使用，避免「只有空间角色的开发者侧栏空白」。
+	var wsRows pgx.Rows
+	var errWS error
 	if workspaceID != 0 {
-		wsRows, err := r.pool.Query(ctx,
+		wsRows, errWS = r.pool.Query(ctx,
 			`SELECT role_id FROM vo_workspace_members
 			 WHERE user_id=$1 AND workspace_id=$2 AND deleted=false AND status='active'`, userID, workspaceID)
-		if err != nil {
-			return nil, fmt.Errorf("query workspace role ids: %w", err)
+	} else {
+		wsRows, errWS = r.pool.Query(ctx,
+			`SELECT DISTINCT role_id FROM vo_workspace_members
+			 WHERE user_id=$1 AND deleted=false AND status='active'`, userID)
+	}
+	if errWS != nil {
+		return nil, fmt.Errorf("query workspace role ids: %w", errWS)
+	}
+	defer wsRows.Close()
+	for wsRows.Next() {
+		var rid int64
+		if err := wsRows.Scan(&rid); err != nil {
+			return nil, err
 		}
-		defer wsRows.Close()
-		for wsRows.Next() {
-			var rid int64
-			if err := wsRows.Scan(&rid); err != nil {
-				return nil, err
-			}
-			roleIDs = append(roleIDs, rid)
-		}
+		roleIDs = append(roleIDs, rid)
 	}
 	return roleIDs, nil
 }

@@ -140,6 +140,26 @@ func (h *Handler) ListMenus(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, toMenuDTOs(items))
 }
 
+// GetMyPermissions GET /api/v1/me/permissions?workspace_id=
+// 返回当前用户聚合后的权限码（平台角色 + 空间角色）。前端按钮/Tab 裁剪必须走此接口，
+// 不能从菜单树反推——否则 release:trigger 等 action 码永远不在权限集里。
+func (h *Handler) GetMyPermissions(w http.ResponseWriter, r *http.Request) {
+	uid := mustAuth(w, r)
+	if uid == 0 {
+		return
+	}
+	wsID, _ := strconv.ParseInt(r.URL.Query().Get("workspace_id"), 10, 64)
+	codes, err := h.svc.GetUserPermissions(r.Context(), uid, wsID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if codes == nil {
+		codes = []string{}
+	}
+	httpx.OK(w, codes)
+}
+
 // GetMyMenuTree GET /api/v1/me/menus?scope=
 func (h *Handler) GetMyMenuTree(w http.ResponseWriter, r *http.Request) {
 	uid := mustAuth(w, r)

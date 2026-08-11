@@ -540,6 +540,15 @@ services:
       - "8070:8080"
     volumes:
       - jmsdata:/opt/jumpserver/data
+    networks:
+      default:
+        aliases:
+          - core
+          # jms_web 的 nginx 在启动时对 /chen/ /kael/ 做静态 DNS 解析，
+          # 这两个组件未部署，若不注册别名 nginx 会 crash (host not found)。
+          # 指向 core 即可让 nginx 启动，实际请求会由 core 返回 404。
+          - chen
+          - kael
     restart: unless-stopped
 
   jumpserver-koko:
@@ -551,6 +560,10 @@ services:
       BOOTSTRAP_TOKEN: jumpserver-dev-bootstrap-token
     ports:
       - "2222:2222"
+    networks:
+      default:
+        aliases:
+          - koko
     restart: unless-stopped
 
   jumpserver-lion:
@@ -562,12 +575,18 @@ services:
       BOOTSTRAP_TOKEN: jumpserver-dev-bootstrap-token
     ports:
       - "3389:3389"
+    networks:
+      default:
+        aliases:
+          - lion
     restart: unless-stopped
 
   jumpserver-web:
     image: jumpserver/jms_web:v3.10.9
     depends_on:
       - jumpserver-core
+      - jumpserver-koko
+      - jumpserver-lion
     environment:
       CORE_HOST: http://jumpserver-core:8080
     ports:

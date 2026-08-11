@@ -1,5 +1,5 @@
 import { get, getPaged, post, put, del, api } from './client';
-import type { Application, Group, PodSummary, Paged, ApplicationMember, PodFileEntry, ProbeConfig } from '@/types';
+import type { Application, Group, GroupStableIPsResponse, PodSummary, Paged, ApplicationMember, PodFileEntry, ProbeConfig } from '@/types';
 
 export interface CreateApplicationInput {
   workspace_id: number;
@@ -96,6 +96,7 @@ export const groupApi = {
   // 单 Pod 重启。
   restartPod: (id: number, pod: string) => post<{ restarted: boolean }>(`/groups/${id}/pods/${pod}:restart`, {}),
   listPods: (id: number) => get<{ items: PodSummary[] }>(`/groups/${id}/pods`).then((r) => r.items),
+  listStableIPs: (id: number) => get<GroupStableIPsResponse>(`/groups/${id}/stable-ips`),
   podLogs: (groupId: number, pod: string, params?: { container?: string; tail?: number }) =>
     get<string>(`/groups/${groupId}/pods/${pod}/logs`, params),
   // 文件浏览器（tar-over-exec）。

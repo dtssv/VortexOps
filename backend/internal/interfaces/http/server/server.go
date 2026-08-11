@@ -452,6 +452,7 @@ func New(deps Deps) (*Server, error) {
 
 			// 分组运维（K8s）：Pod / 日志 / 事件 / YAML（只读，workspace scope）。
 			r.Get("/groups/{groupId}/pods", appHandler.ListGroupPods)
+			r.Get("/groups/{groupId}/stable-ips", appHandler.ListGroupStableIPs)
 			r.Get("/groups/{groupId}/pods/{pod}/logs", appHandler.GetGroupPodLogs)
 			r.Post("/groups/{groupId}/pods/{pod}:restart", appHandler.RestartPod)
 			r.Get("/groups/{groupId}/pods/{pod}/files", appHandler.ListPodFiles)
@@ -752,6 +753,7 @@ func New(deps Deps) (*Server, error) {
 			r.Get("/permissions", rbacHandler.ListPermissions)
 			r.Get("/menus", rbacHandler.ListMenus)
 			r.Get("/me/menus", rbacHandler.GetMyMenuTree)
+			r.Get("/me/permissions", rbacHandler.GetMyPermissions)
 			r.Get("/roles", rbacHandler.ListRoles)
 			r.Get("/roles/{id}/permissions", rbacHandler.ListPermissionsByRole)
 			r.Get("/roles/{id}/menus", rbacHandler.ListMenusByRole)

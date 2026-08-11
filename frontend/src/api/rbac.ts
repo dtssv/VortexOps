@@ -10,6 +10,7 @@ export const rbacApi = {
   createMenu: (body: Partial<Menu>) => post<Menu>('/menus', body),
   deleteMenu: (id: number) => del(`/menus/${id}`),
   myMenuTree: () => get<Menu[]>('/me/menus'),
+  myPermissions: () => get<string[]>('/me/permissions'),
   listRoles: (params?: { scope?: string; scope_id?: number; page?: number; size?: number }) =>
     getPaged<Role>('/roles', params),
   createRole: (body: Partial<Role>) => post<Role>('/roles', body),

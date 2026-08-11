@@ -17,6 +17,8 @@ import { configApi } from '@/api/configs';
 import { rbacApi } from '@/api/rbac';
 import { workspaceApi } from '@/api/workspaces';
 import { releaseApi } from '@/api/releases';
+import { PermissionGate } from '@/components/PermissionGate';
+import { usePermission } from '@/hooks/usePermission';
 import { confirmDanger } from '@/utils/action';
 import { formatRelative, formatDuration, formatTime, shortSha, formatBytes } from '@/utils/format';
 import type { Application, ApplicationMember, BaseImage, Build, BuildTool, ConfigSet, ConfigContentSnapshot, GitRef, Group, Image, ProbeConfig, Release, WorkspaceMember } from '@/types';
@@ -27,14 +29,11 @@ export default function ApplicationDetailPage() {
   const appId = Number(params.appId);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const activeTab = ['groups', 'images', 'builds', 'releases', 'git', 'configs', 'members', 'settings'].includes(searchParams.get('tab') || '')
-    ? (searchParams.get('tab') as string)
-    : 'groups';
-  const onTabChange = (key: string) => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', key);
-    setSearchParams(next, { replace: true });
-  };
+  const canBuild = usePermission('build:trigger').can;
+  const canRelease = usePermission('release:trigger').can;
+  const canViewRelease = usePermission('menu:release:view').can;
+  const canViewConfig = usePermission('menu:config:view').can;
+  const canManageApp = usePermission('application:manage').can;
 
   const { data: app, isLoading } = useQuery({
     queryKey: ['application', appId],
@@ -52,19 +51,38 @@ export default function ApplicationDetailPage() {
   const externalManaged = isExternalManaged(app);
 
   const tabItems = [
-    { key: 'groups', label: '分组', children: <GroupsTab appId={appId} readOnly={externalManaged} /> },
-    ...(!externalManaged
+    { key: 'groups', label: '分组', children: <GroupsTab appId={appId} readOnly={externalManaged || !canManageApp} /> },
+    ...(!externalManaged && (canBuild || canViewRelease)
+      ? [{ key: 'images', label: '镜像', children: <ImagesTab appId={appId} canRelease={canRelease} canManage={canManageApp} /> }]
+      : []),
+    ...(!externalManaged && canBuild
+      ? [{ key: 'builds', label: '构建', children: <BuildsTab appId={appId} canRelease={canRelease} /> }]
+      : []),
+    ...(!externalManaged && canViewRelease
+      ? [{ key: 'releases', label: '发布', children: <ReleasesTab appId={appId} canRelease={canRelease} /> }]
+      : []),
+    ...(!externalManaged && canManageApp
+      ? [{ key: 'git', label: 'Git 源', children: <GitTab appId={appId} /> }]
+      : []),
+    ...(canViewConfig
+      ? [{ key: 'configs', label: '配置', children: <ConfigsTab appId={appId} readOnly={externalManaged || !canManageApp} /> }]
+      : []),
+    ...(canManageApp
       ? [
-          { key: 'images', label: '镜像', children: <ImagesTab appId={appId} /> },
-          { key: 'builds', label: '构建', children: <BuildsTab appId={appId} /> },
-          { key: 'releases', label: '发布', children: <ReleasesTab appId={appId} /> },
-          { key: 'git', label: 'Git 源', children: <GitTab appId={appId} /> },
+          { key: 'members', label: '成员', children: <MembersTab appId={appId} ownerId={app?.owner_id} /> },
+          { key: 'settings', label: '设置', children: <SettingsTab app={app} readOnly={externalManaged} /> },
         ]
       : []),
-    { key: 'configs', label: '配置', children: <ConfigsTab appId={appId} readOnly={externalManaged} /> },
-    { key: 'members', label: '成员', children: <MembersTab appId={appId} ownerId={app?.owner_id} /> },
-    { key: 'settings', label: '设置', children: <SettingsTab app={app} readOnly={externalManaged} /> },
   ];
+  const allowedTabKeys = tabItems.map((t) => t.key);
+  const activeTab = allowedTabKeys.includes(searchParams.get('tab') || '')
+    ? (searchParams.get('tab') as string)
+    : 'groups';
+  const onTabChange = (key: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', key);
+    setSearchParams(next, { replace: true });
+  };
 
   return (
     <PageContainer
@@ -226,7 +244,7 @@ export default function ApplicationDetailPage() {
     );
   }
 
-  function ImagesTab({ appId }: { appId: number }) {
+  function ImagesTab({ appId, canRelease, canManage }: { appId: number; canRelease: boolean; canManage: boolean }) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const [tagOpen, setTagOpen] = useState(false);
@@ -339,29 +357,34 @@ export default function ApplicationDetailPage() {
         width: 200,
         render: (_, r) => (
           <Space>
-            <Button
-              type="link"
-              size="small"
-              disabled={r.retired}
-              onClick={() => {
-                setTagTarget(r);
-                tagForm.setFieldsValue({ image_id: r.id });
-                setTagOpen(true);
-              }}
-            >
-              打标签
-            </Button>
-            <Button
-              type="link"
-              size="small"
-              disabled={r.retired}
-              onClick={() => {
-                setPublishImage(r);
-                setPublishOpen(true);
-              }}
-            >
-              发布
-            </Button>
+            {canManage && (
+              <Button
+                type="link"
+                size="small"
+                disabled={r.retired}
+                onClick={() => {
+                  setTagTarget(r);
+                  tagForm.setFieldsValue({ image_id: r.id });
+                  setTagOpen(true);
+                }}
+              >
+                打标签
+              </Button>
+            )}
+            {canRelease && (
+              <Button
+                type="link"
+                size="small"
+                disabled={r.retired}
+                onClick={() => {
+                  setPublishImage(r);
+                  setPublishOpen(true);
+                }}
+              >
+                发布
+              </Button>
+            )}
+            {canManage && (
             <Button
               type="link"
               size="small"
@@ -377,6 +400,7 @@ export default function ApplicationDetailPage() {
             >
               退役
             </Button>
+            )}
           </Space>
         ),
       },
@@ -428,7 +452,7 @@ export default function ApplicationDetailPage() {
     );
   }
 
-  function BuildsTab({ appId }: { appId: number }) {
+  function BuildsTab({ appId, canRelease }: { appId: number; canRelease: boolean }) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const [triggerOpen, setTriggerOpen] = useState(false);
@@ -926,17 +950,19 @@ export default function ApplicationDetailPage() {
             >
               编辑
             </Button>
-            <Button
-              type="link"
-              size="small"
-              disabled={r.status !== 'success' || !r.output_image_id}
-              onClick={() => {
-                setPublishImageId(r.output_image_id);
-                setPublishOpen(true);
-              }}
-            >
-              发布
-            </Button>
+            {canRelease && (
+              <Button
+                type="link"
+                size="small"
+                disabled={r.status !== 'success' || !r.output_image_id}
+                onClick={() => {
+                  setPublishImageId(r.output_image_id);
+                  setPublishOpen(true);
+                }}
+              >
+                发布
+              </Button>
+            )}
             <Button
               type="link"
               size="small"
@@ -1410,7 +1436,7 @@ export default function ApplicationDetailPage() {
     );
   }
 
-  function ReleasesTab({ appId }: { appId: number }) {
+  function ReleasesTab({ appId, canRelease }: { appId: number; canRelease: boolean }) {
     const { data: groups } = useQuery({
       queryKey: ['application', appId, 'groups'],
       queryFn: () => groupApi.list(appId),
@@ -1473,25 +1499,29 @@ export default function ApplicationDetailPage() {
 
     return (
       <>
-        <div style={{ marginBottom: 16, textAlign: 'right' }}>
-          <Space>
-            <Button
-              icon={<DeploymentUnitOutlined />}
-              disabled={!hasGroups}
-              onClick={() => navigate(`/applications/${appId}/multi-release`)}
-            >
-              多集群发布
-            </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              disabled={!hasGroups}
-              onClick={() => firstGroupId && navigate(`/groups/${firstGroupId}`)}
-            >
-              新建发布
-            </Button>
-          </Space>
-        </div>
+        {canRelease && (
+          <div style={{ marginBottom: 16, textAlign: 'right' }}>
+            <Space>
+              <PermissionGate code="menu:release:orch:view">
+                <Button
+                  icon={<DeploymentUnitOutlined />}
+                  disabled={!hasGroups}
+                  onClick={() => navigate(`/applications/${appId}/multi-release`)}
+                >
+                  多集群发布
+                </Button>
+              </PermissionGate>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!hasGroups}
+                onClick={() => firstGroupId && navigate(`/groups/${firstGroupId}`)}
+              >
+                新建发布
+              </Button>
+            </Space>
+          </div>
+        )}
         <Table
           rowKey="id"
           loading={isLoading}

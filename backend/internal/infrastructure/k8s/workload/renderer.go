@@ -84,10 +84,10 @@ type RenderInput struct {
 	AppProbe *application.ProbeConfig
 
 	// NetworkProfile 集群网络方案配置（从 cluster.metadata.network_profile 解析）。
-	// 决定 CNI annotation 注入方式与是否建 Service：
-	//   - large-underlay + group.network.mode=underlay：注入 Macvlan/IPVLAN/Whereabouts annotation，Pod 拿物理 IP，不建 Service。
-	//   - xlarge-bgp：注入 Calico annotation（IP 由 Calico IPAM 自管，平台不强制）。
-	//   - dev-single / medium-overlay：仅 keep_pod_ip 时注入 whereabouts/calico annotation，行为同旊。
+	// 决定 CNI annotation 注入方式（一律不建 Service，对外以固定 Pod IP 直连）：
+	//   - large-underlay：注入 Macvlan/IPVLAN/Kube-OVN annotation，Pod 拿物理 IP。
+	//   - xlarge-bgp：注入 Calico/Cilium 静态 IP annotation，路由由 BGP 宣告。
+	//   - dev-single / medium-overlay：注入 Multus NAD + Underlay 固定 IP（副网卡直连）。
 	// 为 nil 时按旧逻辑（兼容未登记 profile 的老集群）。
 	NetworkProfile *networkprofile.ProfileConfig
 }
@@ -463,18 +463,15 @@ func buildAnnotations(g *application.Group, stableIPs []string, profile *network
 }
 
 // injectCNIAnnotations 按 CNI provider 注入固定 IP 的 annotation。
-// 始终注入（发布服务默认分配稳定 IP）；具体 CNI 由集群 network_profile 决定。
-// 各 CNI 的 annotation key：
-//   - whereabouts: k8s.v1.cni.cncf.io/ipAddrs（JSON 数组字符串）
-//   - calico:      cni.projectcalico.org/ipAddrs（JSON 数组字符串）
-//   - kube-ovn:    ovn.kubernetes.io/ip_address（单个 IP 字符串）
-//   - macvlan/ipvlan: 走 Multus NetworkAttachmentDefinition，用 k8s.v1.cni.cncf.io/networks
-//     指定 NAD 名 + IP（格式见 networksJSON）。
-//
-// Multus 双网卡场景：默认网卡仍走集群默认 CNI（Overlay，提供 Service/ClusterIP 通信），
-// 副网卡走 Underlay NAD（直连物理 IP）。VortexOps 只注入 annotation，NAD 由集群侧预创建。
+// Overlay/dev：业务口走 Multus Underlay 副网卡（物理固定 IP），默认网卡仍走 Overlay。
+// underlay / BGP：按主 CNI 注入静态 IP 注解。
 func injectCNIAnnotations(ann map[string]string, stableIPs []string, profile *networkprofile.ProfileConfig) {
 	if len(stableIPs) == 0 {
+		return
+	}
+	// Overlay/开发集群：固定 IP 必须打在 Multus 副网卡上，才能对外直连。
+	if profile != nil && profile.RequiresUnderlaySecondary() {
+		ann["k8s.v1.cni.cncf.io/networks"] = networksJSON(profile.NADName(), stableIPs)
 		return
 	}
 	cni := networkprofile.CNIWhereabouts // 默认（兼容旧 whereabouts 池）
@@ -493,11 +490,8 @@ func injectCNIAnnotations(ann map[string]string, stableIPs []string, profile *ne
 		// Calico 链式兼容（开发环境 Calico+Cilium 迁移期）。
 		ciliuminfra.MergeCalicoCompat(ann, stableIPs[0])
 	case networkprofile.CNIKubeOVN:
-		if len(stableIPs) > 0 {
-			ann["ovn.kubernetes.io/ip_address"] = stableIPs[0]
-		}
+		ann["ovn.kubernetes.io/ip_address"] = stableIPs[0]
 	case networkprofile.CNIMacvlan, networkprofile.CNIIPVLAN:
-		// Multus：指定 NAD 名 + IP。NAD 由集群侧预创建（名约定见 networkprofile.MultusNADName）。
 		nadName := profile.NADName()
 		ann["k8s.v1.cni.cncf.io/networks"] = networksJSON(nadName, stableIPs)
 	}
