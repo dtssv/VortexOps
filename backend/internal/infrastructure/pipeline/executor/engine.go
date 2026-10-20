@@ -15,13 +15,17 @@ import (
 type StepKind string
 
 const (
-	StepBuild  StepKind = "build"
-	StepTest   StepKind = "test"
-	StepScan   StepKind = "scan"
-	StepImage  StepKind = "image"
-	StepDeploy StepKind = "deploy"
-	StepVerify StepKind = "verify"
+	StepBuild   StepKind = "build"
+	StepTest    StepKind = "test"
+	StepScan    StepKind = "scan"
+	StepImage   StepKind = "image"
+	StepDeploy  StepKind = "deploy"
+	StepVerify  StepKind = "verify"
 	StepPromote StepKind = "promote"
+	// 制品签名与 SBOM：sign 用 cosign 对镜像签名并记录到 ArtifactSignature；
+	// sbom 用 syft 生成 SBOM 上传 S3 并记录到 ArtifactSignature。
+	StepSign StepKind = "sign"
+	StepSBOM StepKind = "sbom"
 )
 
 // StepResult 单步骤执行结果。

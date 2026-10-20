@@ -24,6 +24,7 @@ import (
 	"github.com/vortexops/vortexops/internal/domain/release"
 	dnsdomain "github.com/vortexops/vortexops/internal/domain/dns"
 	"github.com/vortexops/vortexops/internal/application/clusterapp"
+	"github.com/vortexops/vortexops/internal/infrastructure/gitops"
 	"github.com/vortexops/vortexops/internal/infrastructure/k8s/workload"
 	"github.com/vortexops/vortexops/pkg/apperr"
 )
@@ -108,6 +109,21 @@ type Service struct {
 	appProbeResolver AppProbeResolver
 	dnsMapper        DNSMapper
 	dynamicProvider  DynamicClientProvider
+	// gitopsRepo GitOps manifest 仓库管理器（可选：为 nil 时直接 apply K8s，不推 Git）。
+	gitopsRepo GitOpsRepoManager
+}
+
+// WorkloadApplier 工作负载应用器接口（workload.Applier 与 gitops.GitOpsApplier 均实现）。
+// 用于 releaseapp 解耦具体实现，支持 GitOps 装饰器注入。
+type WorkloadApplier interface {
+	Apply(ctx context.Context, result *workload.RenderResult) error
+	DeleteDeployment(ctx context.Context, namespace, name string) error
+	Delete(ctx context.Context, namespace, name, workloadType string) error
+}
+
+// GitOpsRepoManager GitOps manifest 仓库管理器接口（由 gitrepo.RepositoryManager 实现）。
+type GitOpsRepoManager interface {
+	CommitAndPush(ctx context.Context, files map[string][]byte, message string) error
 }
 
 // New 创建发布服务。clientProvider 用于按集群 ID 解析 K8s clientset。
@@ -143,6 +159,13 @@ func (s *Service) WithDNSMapper(m DNSMapper) *Service {
 // WithDynamicClientProvider 注入 dynamic client 提供者（Cilium/Mesh CRD apply）。
 func (s *Service) WithDynamicClientProvider(p DynamicClientProvider) *Service {
 	s.dynamicProvider = p
+	return s
+}
+
+// WithGitOpsRepo 注入 GitOps manifest 仓库管理器（可选）。
+// 注入后，发布时除直接 apply K8s 外，还会把渲染出的 manifest 推送到 Git 仓库。
+func (s *Service) WithGitOpsRepo(r GitOpsRepoManager) *Service {
+	s.gitopsRepo = r
 	return s
 }
 
@@ -759,12 +782,16 @@ func stableIPRollingOverrides(stableIPs []string, replicas int, relMaxSurge, rel
 }
 
 // newWorkloadApplier 创建带 dynamic client 的工作负载应用器（Cilium/Mesh CRD）。
-func (s *Service) newWorkloadApplier(ctx context.Context, clusterID int64, clientset kubernetes.Interface) *workload.Applier {
+// 若注入了 GitOps 仓库管理器，则用 GitOpsApplier 装饰（推 Git + apply K8s）。
+func (s *Service) newWorkloadApplier(ctx context.Context, clusterID int64, clientset kubernetes.Interface) WorkloadApplier {
 	applier := workload.NewApplier(clientset)
 	if s.dynamicProvider != nil {
 		if dyn, err := s.dynamicProvider.GetDynamicClient(ctx, clusterID); err == nil && dyn != nil {
 			applier.WithDynamic(dyn)
 		}
+	}
+	if s.gitopsRepo != nil {
+		return gitops.NewGitOpsApplier(applier, s.gitopsRepo)
 	}
 	return applier
 }
@@ -1198,6 +1225,23 @@ func (s *Service) appendEvent(ctx context.Context, releaseID int64, eventType, m
 }
 
 // autoRollback 自动回滚到上一成功发布。
+// TriggerPromotionRelease 晋升部署触发：对单个目标 group 触发 rolling 发布。
+// 实现 pipelineapp.ReleaseTrigger 接口，供晋升状态机调用。
+func (s *Service) TriggerPromotionRelease(ctx context.Context, groupID, imageID, triggerBy int64) (int64, error) {
+	rel, err := s.TriggerRelease(ctx, TriggerReleaseInput{
+		GroupID:       groupID,
+		ImageID:       imageID,
+		ReleaseType:   release.ReleaseRolling,
+		Strategy:      release.StrategyRolling,
+		TriggeredBy:   triggerBy,
+		TriggerSource: release.TriggerPromotion,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rel.ID, nil
+}
+
 func (s *Service) autoRollback(ctx context.Context, groupID, operatorID int64) {
 	prev, err := s.repo.GetLastSuccessfulRelease(ctx, groupID)
 	if err != nil {

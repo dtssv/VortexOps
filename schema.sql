@@ -2419,6 +2419,8 @@ INSERT INTO vo_permissions (code, name, category, scope, description, sort_order
  ('k8s:node:manage',         'K8s-节点运维',        'action', 'platform', 'cordon/uncordon/drain 节点',   420, true),
  ('k8s:configmap:manage',    'K8s-ConfigMap 管理',  'action', 'platform', '创建/更新/删除 ConfigMap/Secret',430, true),
  ('k8s:storage:view',        'K8s-存储查看',        'action', 'platform', '查看 PV/PVC/StorageClass',     440, true),
+ ('k8s:crd:view',            'K8s-CRD 查看',        'action', 'platform', '查看 CRD 定义与自定义资源实例', 441, true),
+ ('k8s:crd:manage',          'K8s-CRD 管理',        'action', 'platform', '删除自定义资源实例',           442, true),
  ('k8s:network:view',        'K8s-网络查看',        'action', 'platform', '查看 Service/Ingress/NetworkPolicy', 450, true),
  ('cluster:nodepool:scale',  '集群-节点池扩缩容',   'action', 'platform', '调整云厂商节点池 desired 数',  460, true),
  -- 运维工具 action 权限
@@ -2488,7 +2490,7 @@ WHERE r.code = 'platform_auditor';
 INSERT INTO vo_role_permissions (role_id, permission_id, granted, created_by)
 SELECT r.id, p.id, true, NULL
 FROM vo_roles r JOIN vo_permissions p ON p.code IN (
-  'audit:export','k8s:workload:view','k8s:storage:view','k8s:network:view',
+  'audit:export','k8s:workload:view','k8s:storage:view','k8s:crd:view','k8s:network:view',
   'bastion:session:view','ops:session:view','audit:behavior:view'
 )
 WHERE r.code = 'platform_auditor';
@@ -2551,6 +2553,7 @@ FROM (VALUES
   -- 应用交付
   ('grp-delivery', 'builds',          '构建中心',   '/builds',             'build',        'menu','platform',210,true,NULL),
   ('grp-delivery', 'pipeline',        'CI/CD',      '/pipelines',          'pipeline',     'menu','platform',220,true,'menu:pipeline:view'),
+  ('grp-delivery', 'promotion',       '环境晋升',   '/promotions',         'promotion',    'menu','platform',225,true,'menu:pipeline:view'),
   ('grp-delivery', 'model',           '大模型',     '/inference',          'inference',    'menu','platform',230,true,'menu:model:view'),
   ('grp-delivery', 'middleware',      '中间件',     '/middleware',         'middleware',   'menu','platform',240,true,'menu:middleware:view'),
   ('grp-delivery', 'release',         '发布',       '/releases',           'release',      'menu','platform',250,true,'menu:release:view'),
@@ -2729,7 +2732,26 @@ INSERT INTO vo_system_settings (key, value, description, is_public) VALUES
  ('ai.diagnosis.provider',  '"openai"',                   'AI 诊断 Provider（openai | anthropic | ollama）', false),
  ('ai.diagnosis.url',       '""'::jsonb,                  'AI 诊断 API 基地址', false),
  ('ai.diagnosis.api_key',   '""'::jsonb,                  'AI 诊断 API Key', false),
- ('ai.diagnosis.model',     '"gpt-4o"',                   'AI 诊断模型名', false);
+ ('ai.diagnosis.model',     '"gpt-4o"',                   'AI 诊断模型名', false),
+ -- 制品签名 / SBOM 工具路径（空则使用系统 PATH）
+ ('platform.cosign_path',   '""'::jsonb,                  'cosign 二进制路径（空则用 PATH）', false),
+ ('platform.syft_path',     '""'::jsonb,                  'syft 二进制路径（空则用 PATH）', false),
+ -- GitOps manifest 仓库（配置后发布时把 manifest 推到 Git）
+ ('gitops.repo_url',        '""'::jsonb,                  'GitOps manifest 仓库 URL（为空则不启用）', false),
+ ('gitops.branch',          '"main"',                     'GitOps manifest 仓库分支', false),
+ ('gitops.username',        '""'::jsonb,                  'GitOps 仓库认证用户名', false),
+ ('gitops.password',        '""'::jsonb,                  'GitOps 仓库认证密码/token', false),
+ ('gitops.work_dir',        '""'::jsonb,                  'GitOps 本地工作目录（空则每次 clone 到临时目录）', false),
+ -- 通知渠道默认 webhook（外发通知 Recipient 为空时回退）
+ ('notif.dingtalk_webhook', '""'::jsonb,                  '钉钉机器人默认 webhook URL', false),
+ ('notif.feishu_webhook',   '""'::jsonb,                  '飞书自定义机器人默认 webhook URL', false),
+ ('notif.wecom_webhook',    '""'::jsonb,                  '企业微信群机器人默认 webhook URL', false),
+ ('notif.webhook_url',      '""'::jsonb,                  '通用 webhook 默认 URL', false),
+ ('notif.smtp_host',        '""'::jsonb,                  'SMTP 邮件服务器主机', false),
+ ('notif.smtp_port',        '587',                        'SMTP 端口（默认 587）', false),
+ ('notif.smtp_username',    '""'::jsonb,                  'SMTP 用户名', false),
+ ('notif.smtp_password',    '""'::jsonb,                  'SMTP 密码', false),
+ ('notif.smtp_from',        '""'::jsonb,                  '发件人地址', false);
 
 -- ---------- 15.9 工作空间创建策略 ----------
 INSERT INTO vo_workspace_creation_policies (name, applies_to_roles, allow_self_create, max_workspaces_per_user, default_quota, default_clusters, require_approval, auto_bind_catalog) VALUES

@@ -213,6 +213,63 @@ func (r *Repository) CountUnread(ctx context.Context, userID int64) (int64, erro
 	return count, nil
 }
 
+// MarkSent 更新通知投递结果（sent/failed + error_message + sent_at）。
+// 站内通知（in_app）不调用此方法（CreateNotification 时已置 sent/read）。
+func (r *Repository) MarkSent(ctx context.Context, id int64, status collab.NotificationStatus, errorMessage string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE vo_notifications SET status=$1, error_message=$2, sent_at=$3 WHERE id=$4`,
+		status, nullableStr(errorMessage), r.now(), id)
+	if err != nil {
+		return fmt.Errorf("mark sent: %w", err)
+	}
+	return nil
+}
+
+// ListPending 列出待投递（pending）的外发通知，按创建时间升序。
+// Channels 为空时查所有非 in_app 渠道的 pending 通知。
+func (r *Repository) ListPending(ctx context.Context, q collab.PendingQuery) ([]*collab.Notification, error) {
+	if q.Limit <= 0 {
+		q.Limit = 50
+	}
+	args := []any{q.Limit}
+	where := "status='pending' AND channel<>'in_app'"
+	if len(q.Channels) > 0 {
+		ph := make([]string, 0, len(q.Channels))
+		for _, ch := range q.Channels {
+			args = append(args, ch)
+			ph = append(ph, fmt.Sprintf("$%d", len(args)))
+		}
+		where += " AND channel IN (" + joinStrs(ph, ",") + ")"
+	}
+	listQ := fmt.Sprintf("SELECT %s FROM vo_notifications WHERE %s ORDER BY created_at ASC LIMIT $1", notifColumns, where)
+	rows, err := r.pool.Query(ctx, listQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query pending notifications: %w", err)
+	}
+	defer rows.Close()
+	var items []*collab.Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, n)
+	}
+	return items, rows.Err()
+}
+
+// joinStrs 拼接字符串切片。
+func joinStrs(ss []string, sep string) string {
+	out := ""
+	for i, s := range ss {
+		if i > 0 {
+			out += sep
+		}
+		out += s
+	}
+	return out
+}
+
 // --- helpers ---
 
 func nullableStr(s string) any {

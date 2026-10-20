@@ -26,6 +26,7 @@ type Config struct {
 	S3          S3Config
 	Kafka       KafkaConfig
 	ES          ElasticsearchConfig
+	Email       EmailConfig
 	Integration IntegrationConfig
 }
 
@@ -131,6 +132,16 @@ type ElasticsearchConfig struct {
 	IndexLogs  string
 	Timeout    time.Duration
 	Enabled    bool
+}
+
+// EmailConfig SMTP 邮件发送配置（通知投递用）。Host 为空则禁用邮件渠道。
+type EmailConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	Enabled  bool
 }
 
 // IntegrationConfig 构建集成配置：系统变量化 Jenkins/Harbor/K8s 默认指向。
@@ -242,6 +253,14 @@ func Load(_ string, _ string) (*Config, error) {
 			IndexLogs:  envStr("ES_INDEX_LOGS", "vortexops-build-logs-*"),
 			Timeout:    envDur("ES_TIMEOUT", 10*time.Second),
 			Enabled:    envStr("ES_URL", "") != "",
+		},
+		Email: EmailConfig{
+			Host:     envStr("SMTP_HOST", ""),
+			Port:     envInt("SMTP_PORT", 587),
+			Username: envStr("SMTP_USERNAME", ""),
+			Password: envStr("SMTP_PASSWORD", ""),
+			From:     envStr("SMTP_FROM", "noreply@vortexops.local"),
+			Enabled:  envStr("SMTP_HOST", "") != "",
 		},
 		Integration: IntegrationConfig{
 			JenkinsURL:      envStr("JENKINS_URL", "http://jenkins:8080"),

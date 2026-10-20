@@ -56,10 +56,11 @@ const (
 type TriggerSource string
 
 const (
-	TriggerManual   TriggerSource = "manual"
-	TriggerWebhook  TriggerSource = "webhook"
-	TriggerAPI      TriggerSource = "api"
-	TriggerSchedule TriggerSource = "schedule"
+	TriggerManual    TriggerSource = "manual"
+	TriggerWebhook   TriggerSource = "webhook"
+	TriggerAPI       TriggerSource = "api"
+	TriggerSchedule  TriggerSource = "schedule"
+	TriggerPromotion TriggerSource = "promotion" // 环境晋升触发的发布
 )
 
 type PresetScope string

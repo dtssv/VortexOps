@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
 	"github.com/vortexops/vortexops/internal/domain"
@@ -401,6 +402,16 @@ func (s *Service) GetClient(ctx context.Context, clusterID int64) (kubernetes.In
 		return nil, err
 	}
 	return entry.Clientset, nil
+}
+
+// GetRestConfig 返回指定集群的 REST 配置（解密 kubeconfig → 缓存）。
+// 供 crdapp 等需要 apiextensions client 的应用服务调用。
+func (s *Service) GetRestConfig(ctx context.Context, clusterID int64) (*rest.Config, error) {
+	entry, err := s.getClientEntry(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	return entry.RestConfig, nil
 }
 
 // getClientEntry 解密 kubeconfig 并获取缓存的 K8s 客户端入口（含 RestConfig，供 exec 探活使用）。

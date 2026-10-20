@@ -25,6 +25,7 @@ import (
 	"github.com/vortexops/vortexops/internal/application/extapiapp"
 	"github.com/vortexops/vortexops/internal/application/identityapp"
 	"github.com/vortexops/vortexops/internal/application/inferenceapp"
+	"github.com/vortexops/vortexops/internal/application/crdapp"
 	"github.com/vortexops/vortexops/internal/application/k8sapp"
 	"github.com/vortexops/vortexops/internal/application/logapp"
 	"github.com/vortexops/vortexops/internal/application/monitoringapp"
@@ -56,6 +57,7 @@ import (
 	"github.com/vortexops/vortexops/internal/interfaces/http/httpauth"
 	"github.com/vortexops/vortexops/internal/interfaces/http/httpx/auditmw"
 	"github.com/vortexops/vortexops/internal/interfaces/http/inferencehttp"
+	"github.com/vortexops/vortexops/internal/interfaces/http/crdhttp"
 	"github.com/vortexops/vortexops/internal/interfaces/http/k8shttp"
 	"github.com/vortexops/vortexops/internal/interfaces/http/loghttp"
 	"github.com/vortexops/vortexops/internal/interfaces/http/monitoringhttp"
@@ -109,6 +111,8 @@ import (
 	"github.com/vortexops/vortexops/internal/infrastructure/redis/permission"
 	extapiredis "github.com/vortexops/vortexops/internal/infrastructure/redis/extapi"
 	"github.com/vortexops/vortexops/internal/infrastructure/redis/runtime"
+	"github.com/vortexops/vortexops/internal/infrastructure/gitrepo"
+	"github.com/vortexops/vortexops/internal/infrastructure/notif"
 	"github.com/vortexops/vortexops/internal/infrastructure/s3"
 	"github.com/vortexops/vortexops/internal/infrastructure/tekton"
 	"github.com/vortexops/vortexops/internal/infrastructure/pipeline/executor"
@@ -234,9 +238,39 @@ func New(deps Deps) (*Server, error) {
 		return releaseSvc.ExecutePendingRelease(ctx, releaseID, approverID)
 	})
 	releaseSvc.WithApprovalChecker(approvalBridge)
+	// GitOps manifest 仓库（可选：配置 gitops.repo_url 后启用，发布时推 manifest 到 Git）。
+	if gitopsCfg, err := systemSvc.GetGitOpsConfig(context.Background()); err == nil && gitopsCfg.Enabled {
+		gitopsRepoMgr := gitrepo.New(gitopsCfg.RepoURL, gitopsCfg.Branch, gitrepo.Auth{
+			Username: gitopsCfg.Username, Password: gitopsCfg.Password,
+		}, gitopsCfg.WorkDir)
+		releaseSvc.WithGitOpsRepo(gitopsRepoMgr)
+	}
 	permCache := permission.New(deps.Redis.Universal)
 	rbacSvc := rbacapp.New(rbacRepo, permCache)
 	collabSvc := collabapp.New(collabRepo)
+	// 通知投递调度器：注册外发渠道 sender（webhook/email/dingtalk/feishu/wecom）。
+	notifDispatcher := notif.NewDispatcher(collabRepo)
+	notifDispatcher.Register(notif.WebhookSender{})
+	notifDispatcher.Register(notif.DingTalkSender{})
+	notifDispatcher.Register(notif.FeishuSender{})
+	notifDispatcher.Register(notif.WeComSender{})
+	// 邮件发送器使用动态配置提供者：SMTP 系统设置优先，为空回退环境变量。
+	notifDispatcher.Register(notif.NewEmailSenderWithProvider(systemapp.NewEmailConfigProvider(systemSvc, notif.EmailConfig{
+		Host: deps.Config.Email.Host, Port: deps.Config.Email.Port,
+		Username: deps.Config.Email.Username, Password: deps.Config.Email.Password,
+		From: deps.Config.Email.From, Enabled: deps.Config.Email.Enabled,
+	})))
+	// 注入默认 Recipient 解析器：通知 Recipient 为空时回退系统设置中的默认 webhook。
+	notifDispatcher.WithResolver(systemapp.NewNotifDefaultResolver(systemSvc))
+	collabSvc.WithDispatcher(notifDispatcher)
+	// 后台轮询投递 pending 外发通知（10s 一轮）。
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			_ = collabSvc.DispatchPending(context.Background(), 50)
+		}
+	}()
 	clusterOpsRepo := clusteropsrepo.New(deps.DBPool.Pool)
 	clusterOpsSvc := clusteropsapp.New(clusterOpsRepo, clusterSvc, k8sSvc, collabSvc, appRepo)
 	// clusterOpsRepo 同时实现 clusterops.Repository 与 clusterops.MetricsRepository；
@@ -266,24 +300,40 @@ func New(deps Deps) (*Server, error) {
 	rbacHandler := rbachttp.NewHandler(rbacSvc)
 	auditHandler := audithttp.NewHandler(auditSvc)
 	k8sHandler := k8shttp.NewHandler(k8sSvc, nodePoolSvc, clusterSvc)
+	crdSvc := crdapp.New(clusterSvc)
+	crdHandler := crdhttp.NewHandler(crdSvc)
 	monitoringHandler := monitoringhttp.NewHandler(monitoringSvc)
 	collabHandler := collabhttp.NewHandler(collabSvc)
 	clusterOpsHandler := clusteropshttp.NewHandler(clusterOpsSvc)
 	systemHandler := systemhttp.NewHandler(systemSvc)
 	pipeRepo := pipelinerepo.New(deps.DBPool.Pool)
 	pipeSvc := pipelineapp.New(pipeRepo, deps.KafkaProducer, deps.Config.Kafka.Brokers, "pipeline", deps.Config.Kafka.TopicPipeline)
+	// 注入环境晋升状态机的校验器与部署器（串联 releaseapp + approvalapp + pipelineapp）。
+	promotionChecker := pipelineapp.NewPromotionChecker(
+		pipeSvc,                                                    // SignatureReader：读镜像签名
+		releaseapp.NewWindowChecker(releaseRepo),                   // ReleaseWindowChecker：发布窗口校验
+		approvalSvc,                                                // ApprovalReader：审批查询
+	)
+	promotionDeployer := pipelineapp.NewPromotionDeployer(releaseSvc) // ReleaseTrigger：触发部署
+	pipeSvc.WithPromotionChecker(promotionChecker)
+	pipeSvc.WithPromotionDeployer(promotionDeployer)
 	pipeHandler := pipelinehttp.NewHandler(pipeSvc)
 	infRepo := inferencerepo.New(deps.DBPool.Pool)
 	infSvc := inferenceapp.New(infRepo, clusterPool, clusterSvc, deps.KafkaProducer, deps.Config.Kafka.Brokers, "inference", deps.Config.Kafka.TopicInference)
 	infProxy := inferenceapp.NewProxy(infSvc, deps.Redis)
 	infHandler := inferencehttp.NewHandler(infSvc, infProxy)
 	// 注册阶段执行器并启动 pipeline worker（apiserver 内嵌；大规模可拆 cmd/pipeline-worker）。
+	// 制品签名/SBOM 工具二进制路径从系统设置读取（空则使用系统 PATH）。
+	cosignPath, _ := systemSvc.GetCosignPath(context.Background())
+	syftPath, _ := systemSvc.GetSyftPath(context.Background())
 	pipeEngine := executor.NewEngine()
 	pipeEngine.Register(executor.NewBuildExecutor(buildSvc, connector.JenkinsClient))
 	pipeEngine.Register(executor.NewScanExecutor(buildinfra.NewImageScanReader(buildRepo)))
 	pipeEngine.Register(executor.NewDeployExecutor(releaseSvc))
 	pipeEngine.Register(executor.NewVerifyExecutor(releaseSvc))
 	pipeEngine.Register(executor.NewPromoteExecutor(releaseSvc))
+	pipeEngine.Register(executor.NewSignExecutor(pipelineapp.NewImageResolverAdapter(buildRepo), pipelineapp.NewSignatureRecorderAdapter(pipeSvc), cosignPath))
+	pipeEngine.Register(executor.NewSBOMExecutor(pipelineapp.NewImageResolverAdapter(buildRepo), deps.LogStore, pipelineapp.NewSignatureRecorderAdapter(pipeSvc), syftPath))
 	pipeWorker := pipelineworker.New(pipeRepo, pipeEngine, deps.KafkaProducer, deps.Config.Kafka.Brokers, "pipeline", deps.Config.Kafka.TopicPipeline, deps.Logger)
 	go pipeWorker.Run(context.Background())
 
@@ -580,6 +630,18 @@ func New(deps Deps) (*Server, error) {
 					r.Get("/node-pools/{nodePoolId}", k8sHandler.GetNodePool)
 					r.Post("/node-pools/{nodePoolId}/scale", k8sHandler.ScaleNodePool)
 				})
+				// CRD 管理（定义列表/详情 + 自定义资源实例 CRUD）
+				r.Group(func(r chi.Router) {
+					r.Use(httpauth.RequirePermission(rbacSvc, nil, "k8s:crd:view"))
+					r.Get("/crds", crdHandler.ListCRDs)
+					r.Get("/crds/{crdName}", crdHandler.GetCRD)
+					r.Get("/crds/{crdName}/resources", crdHandler.ListResources)
+					r.Get("/crds/{crdName}/resources/{resourceName}", crdHandler.GetResource)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(httpauth.RequirePermission(rbacSvc, nil, "k8s:crd:manage"))
+					r.Delete("/crds/{crdName}/resources/{resourceName}", crdHandler.DeleteResource)
+				})
 			})
 
 			// 构建与镜像：Git 源、构建、日志、仓库、Jenkins、基础镜像、模板、制品。
@@ -789,13 +851,17 @@ func New(deps Deps) (*Server, error) {
 			r.Get("/promotions", pipeHandler.ListPromotions)
 			r.Get("/images/{id}/signature", pipeHandler.GetSignature)
 			r.Group(func(r chi.Router) {
-				r.Use(httpauth.RequirePermission(rbacSvc, wsResolver, "pipeline:manage"))
-				r.Post("/pipelines", pipeHandler.CreatePipeline)
-				r.Delete("/pipelines/{id}", pipeHandler.DeletePipeline)
-				r.Post("/pipelines/{id}/runs", pipeHandler.TriggerRun)
-				r.Post("/promotions", pipeHandler.CreatePromotion)
-				r.Post("/artifacts/signatures", pipeHandler.RecordSignature)
-			})
+			r.Use(httpauth.RequirePermission(rbacSvc, wsResolver, "pipeline:manage"))
+			r.Post("/pipelines", pipeHandler.CreatePipeline)
+			r.Delete("/pipelines/{id}", pipeHandler.DeletePipeline)
+			r.Post("/pipelines/{id}/runs", pipeHandler.TriggerRun)
+			r.Post("/promotions", pipeHandler.CreatePromotion)
+			r.Post("/promotions/{id}/start", pipeHandler.StartPromotion)
+			r.Post("/promotions/{id}/complete-deployment", pipeHandler.CompletePromotionDeployment)
+			r.Post("/promotions/{id}/complete-verify", pipeHandler.CompletePromotionVerify)
+			r.Post("/promotions/{id}/abort", pipeHandler.AbortPromotion)
+			r.Post("/artifacts/signatures", pipeHandler.RecordSignature)
+		})
 			r.Group(func(r chi.Router) {
 				r.Use(httpauth.RequirePermission(rbacSvc, wsResolver, "pipeline:cancel"))
 				r.Post("/pipeline-runs/{id}/cancel", pipeHandler.CancelRun)

@@ -222,6 +222,75 @@ func (h *Handler) ListPromotions(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, httpx.Paged[promotionDTO]{Items: toPromotionDTOs(items), Total: total, Page: page, Size: size})
 }
 
+// StartPromotion POST /api/v1/promotions/{id}/start
+// 启动晋升：pending → deploying（执行前置校验：签名/窗口/审批）
+func (h *Handler) StartPromotion(w http.ResponseWriter, r *http.Request) {
+	uid := mustAuth(w, r)
+	id, ok := parseID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	p, err := h.svc.StartPromotion(r.Context(), id, uid)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.OK(w, toPromotionDTO(p))
+}
+
+// CompletePromotionDeployment POST /api/v1/promotions/{id}/complete-deployment
+// 部署完成：deploying → verifying
+func (h *Handler) CompletePromotionDeployment(w http.ResponseWriter, r *http.Request) {
+	uid := mustAuth(w, r)
+	id, ok := parseID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	p, err := h.svc.CompleteDeployment(r.Context(), id, uid)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.OK(w, toPromotionDTO(p))
+}
+
+// CompletePromotionVerify POST /api/v1/promotions/{id}/complete-verify
+// 验证完成：verifying → succeeded/failed
+func (h *Handler) CompletePromotionVerify(w http.ResponseWriter, r *http.Request) {
+	uid := mustAuth(w, r)
+	id, ok := parseID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	var req struct {
+		Passed bool   `json:"passed"`
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	p, err := h.svc.CompleteVerify(r.Context(), id, uid, req.Passed, req.Reason)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.OK(w, toPromotionDTO(p))
+}
+
+// AbortPromotion POST /api/v1/promotions/{id}/abort
+// 中止晋升：任意非终态 → aborted
+func (h *Handler) AbortPromotion(w http.ResponseWriter, r *http.Request) {
+	uid := mustAuth(w, r)
+	id, ok := parseID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	p, err := h.svc.AbortPromotion(r.Context(), id, uid)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.OK(w, toPromotionDTO(p))
+}
+
 // --- signatures ---
 
 // RecordSignature POST /api/v1/artifacts/signatures

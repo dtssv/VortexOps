@@ -20,6 +20,8 @@ import type {
   K8sConfigMap,
   K8sSecret,
   K8sEvent,
+  CRDSummary,
+  CRResource,
 } from '@/api/k8s';
 import { confirmDanger } from '@/utils/action';
 import { formatTime, formatRelative } from '@/utils/format';
@@ -69,6 +71,7 @@ export default function K8sConsolePage() {
             { key: 'storage', label: '存储', children: <StorageTab clusterId={clusterId} namespace={namespace} /> },
             { key: 'network', label: '网络', children: <NetworkTab clusterId={clusterId} namespace={namespace} /> },
             { key: 'config', label: '配置', children: <ConfigTab clusterId={clusterId} namespace={namespace} /> },
+            { key: 'crd', label: 'CRD', children: <CRDTab clusterId={clusterId} namespace={namespace} /> },
             { key: 'events', label: '事件', children: <EventsTab clusterId={clusterId} namespace={namespace} /> },
           ]}
         />
@@ -515,4 +518,143 @@ function EventsTab({ clusterId, namespace }: { clusterId: number; namespace: str
     { title: '次数', dataIndex: 'count', width: 80 },
   ];
   return <Table<K8sEvent> rowKey={(r) => r.metadata.name} loading={isLoading} dataSource={data} columns={columns} pagination={{ pageSize: 50 }} locale={{ emptyText: <EmptyState title="暂无事件" /> }} />;
+}
+
+// --- CRD Tab ---
+function CRDTab({ clusterId, namespace }: { clusterId: number; namespace: string }) {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
+  const [selectedCRD, setSelectedCRD] = useState<string | null>(null);
+  const [detailResource, setDetailResource] = useState<CRResource | null>(null);
+  const [detailYAML, setDetailYAML] = useState<string>('');
+
+  // CRD 列表
+  const { data: crds, isLoading: crdsLoading } = useQuery({
+    queryKey: ['k8s', clusterId, 'crds'],
+    queryFn: () => k8sApi.listCRDs(clusterId),
+    enabled: !!clusterId,
+  });
+
+  // 选中 CRD 的资源实例列表
+  const { data: resources, isLoading: resLoading } = useQuery({
+    queryKey: ['k8s', clusterId, 'crds', selectedCRD, 'resources', namespace],
+    queryFn: () => k8sApi.listCRDResources(clusterId, selectedCRD!, namespace || undefined),
+    enabled: !!clusterId && !!selectedCRD,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ name, ns }: { name: string; ns: string }) =>
+      k8sApi.deleteCRDResource(clusterId, selectedCRD!, name, ns || undefined),
+    onSuccess: () => {
+      message.success('资源已删除');
+      queryClient.invalidateQueries({ queryKey: ['k8s', clusterId, 'crds', selectedCRD, 'resources', namespace] });
+    },
+    onError: (e: any) => message.error(e?.message || '删除失败'),
+  });
+
+  const viewYAML = async (res: CRResource) => {
+    try {
+      const yaml = await k8sApi.getCRDResourceYAML(clusterId, selectedCRD!, res.name, res.namespace || undefined);
+      setDetailResource(res);
+      setDetailYAML(typeof yaml === 'string' ? yaml : JSON.stringify(yaml, null, 2));
+    } catch (e: any) {
+      message.error(e?.message || '获取 YAML 失败');
+    }
+  };
+
+  const crdColumns: ColumnsType<CRDSummary> = [
+    { title: '名称', dataIndex: 'name', key: 'name' },
+    { title: 'Group', dataIndex: 'group', width: 200 },
+    { title: '版本', dataIndex: 'version', width: 100 },
+    { title: 'Kind', dataIndex: 'kind', width: 160 },
+    { title: 'Scope', dataIndex: 'scope', width: 120, render: (s: string) => <Tag>{s}</Tag> },
+    {
+      title: '状态',
+      dataIndex: 'established',
+      width: 100,
+      render: (ok: boolean) => <Tag color={ok ? 'green' : 'orange'}>{ok ? 'Established' : 'Pending'}</Tag>,
+    },
+    { title: '短名', key: 'short', width: 120, render: (_, r) => (r.short_names || []).join(', ') || '-' },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      render: (_, r) => (
+        <Button size="small" type="link" onClick={() => setSelectedCRD(r.name)}>
+          查看实例
+        </Button>
+      ),
+    },
+  ];
+
+  const resColumns: ColumnsType<CRResource> = [
+    { title: '命名空间', dataIndex: 'namespace', width: 140, render: (ns: string) => ns || '-' },
+    { title: '名称', dataIndex: 'name' },
+    { title: 'Kind', dataIndex: 'kind', width: 160 },
+    { title: '创建时间', key: 'created', width: 180, render: (_, r) => formatTime(r.created_at) },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 160,
+      render: (_, r) => (
+        <Space size="small">
+          <Button size="small" type="link" onClick={() => viewYAML(r)}>YAML</Button>
+          <Button
+            size="small"
+            type="link"
+            danger
+            onClick={() =>
+              confirmDanger({
+                title: `删除 ${r.kind}/${r.name}`,
+                content: '确定删除此自定义资源？此操作不可撤销。',
+                okText: '删除',
+                onOk: () => deleteMutation.mutateAsync({ name: r.name, ns: r.namespace }),
+              })
+            }
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      {!selectedCRD ? (
+        <Table<CRDSummary>
+          rowKey="name"
+          loading={crdsLoading}
+          dataSource={crds}
+          columns={crdColumns}
+          pagination={{ pageSize: 50 }}
+          locale={{ emptyText: <EmptyState title="暂无 CRD" /> }}
+        />
+      ) : (
+        <div>
+          <Space style={{ marginBottom: 16 }}>
+            <Button onClick={() => setSelectedCRD(null)}>← 返回 CRD 列表</Button>
+            <span style={{ fontWeight: 500 }}>{selectedCRD}</span>
+          </Space>
+          <Table<CRResource>
+            rowKey={(r) => `${r.namespace}/${r.name}`}
+            loading={resLoading}
+            dataSource={resources}
+            columns={resColumns}
+            pagination={{ pageSize: 50 }}
+            locale={{ emptyText: <EmptyState title="暂无资源实例" /> }}
+          />
+        </div>
+      )}
+      <Modal
+        title={detailResource ? `${detailResource.kind}/${detailResource.name}` : '资源详情'}
+        open={!!detailResource}
+        onCancel={() => setDetailResource(null)}
+        footer={null}
+        width={800}
+      >
+        <Input.TextArea value={detailYAML} readOnly autoSize={{ minRows: 20, maxRows: 30 }} style={{ fontFamily: 'monospace' }} />
+      </Modal>
+    </div>
+  );
 }

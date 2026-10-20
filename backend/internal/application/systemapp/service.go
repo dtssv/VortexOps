@@ -28,6 +28,26 @@ const (
 	KeyBuildEngine       = "platform.build_engine" // jenkins | tekton
 	KeyTektonNamespace   = "tekton.namespace"
 	KeyTektonKubeconfig  = "tekton.kubeconfig"
+	// 制品签名 / SBOM 工具二进制路径（空则使用系统 PATH 中的 cosign / syft）。
+	KeyCosignPath = "platform.cosign_path"
+	KeySyftPath   = "platform.syft_path"
+	// GitOps manifest 仓库配置（启用后发布时把 manifest 推到 Git 仓库）。
+	KeyGitOpsRepoURL    = "gitops.repo_url"
+	KeyGitOpsBranch     = "gitops.branch"
+	KeyGitOpsUsername   = "gitops.username"
+	KeyGitOpsPassword   = "gitops.password"
+	KeyGitOpsWorkDir    = "gitops.work_dir"
+	// 通知渠道默认 webhook URL（外发通知在 Recipient 为空时回退使用）。
+	KeyNotifDingTalkWebhook = "notif.dingtalk_webhook"
+	KeyNotifFeishuWebhook   = "notif.feishu_webhook"
+	KeyNotifWeComWebhook    = "notif.wecom_webhook"
+	KeyNotifWebhookURL      = "notif.webhook_url"
+	// SMTP 邮件配置（覆盖环境变量；为空则回退到 config.Email）。
+	KeyNotifSMTPHost     = "notif.smtp_host"
+	KeyNotifSMTPPort     = "notif.smtp_port"
+	KeyNotifSMTPUsername = "notif.smtp_username"
+	KeyNotifSMTPPassword = "notif.smtp_password"
+	KeyNotifSMTPFrom     = "notif.smtp_from"
 )
 
 // SetInput 设置项写入入参。
@@ -120,6 +140,116 @@ func (s *Service) GetTektonNamespace(ctx context.Context) (string, error) {
 // GetTektonKubeconfig 读取 Tekton 构建集群 kubeconfig（base64 或 PEM），未配置返回空。
 func (s *Service) GetTektonKubeconfig(ctx context.Context) (string, error) {
 	return s.getStringSetting(ctx, KeyTektonKubeconfig, "")
+}
+
+// GetCosignPath 读取 cosign 二进制路径，未配置返回空（使用系统 PATH）。
+func (s *Service) GetCosignPath(ctx context.Context) (string, error) {
+	return s.getStringSetting(ctx, KeyCosignPath, "")
+}
+
+// GetSyftPath 读取 syft 二进制路径，未配置返回空（使用系统 PATH）。
+func (s *Service) GetSyftPath(ctx context.Context) (string, error) {
+	return s.getStringSetting(ctx, KeySyftPath, "")
+}
+
+// GitOpsConfig GitOps manifest 仓库配置（从系统设置读取）。
+type GitOpsConfig struct {
+	RepoURL  string
+	Branch   string
+	Username string
+	Password string
+	WorkDir  string
+	Enabled  bool
+}
+
+// GetGitOpsConfig 读取 GitOps 配置。RepoURL 为空则未启用。
+func (s *Service) GetGitOpsConfig(ctx context.Context) (GitOpsConfig, error) {
+	url, err := s.getStringSetting(ctx, KeyGitOpsRepoURL, "")
+	if err != nil {
+		return GitOpsConfig{}, err
+	}
+	branch, err := s.getStringSetting(ctx, KeyGitOpsBranch, "main")
+	if err != nil {
+		return GitOpsConfig{}, err
+	}
+	username, err := s.getStringSetting(ctx, KeyGitOpsUsername, "")
+	if err != nil {
+		return GitOpsConfig{}, err
+	}
+	password, err := s.getStringSetting(ctx, KeyGitOpsPassword, "")
+	if err != nil {
+		return GitOpsConfig{}, err
+	}
+	workDir, err := s.getStringSetting(ctx, KeyGitOpsWorkDir, "")
+	if err != nil {
+		return GitOpsConfig{}, err
+	}
+	return GitOpsConfig{
+		RepoURL: url, Branch: branch, Username: username,
+		Password: password, WorkDir: workDir, Enabled: url != "",
+	}, nil
+}
+
+// NotifChannelConfig 通知渠道默认配置（从系统设置读取，供通知投递层回退使用）。
+type NotifChannelConfig struct {
+	DingTalkWebhook string
+	FeishuWebhook   string
+	WeComWebhook    string
+	WebhookURL      string
+	SMTPHost        string
+	SMTPPort        int
+	SMTPUsername    string
+	SMTPPassword    string
+	SMTPFrom        string
+	SMTPEEnabled    bool
+}
+
+// GetNotifChannelConfig 读取通知渠道默认配置。
+func (s *Service) GetNotifChannelConfig(ctx context.Context) (NotifChannelConfig, error) {
+	ding, err := s.getStringSetting(ctx, KeyNotifDingTalkWebhook, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	fei, err := s.getStringSetting(ctx, KeyNotifFeishuWebhook, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	wecom, err := s.getStringSetting(ctx, KeyNotifWeComWebhook, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	wh, err := s.getStringSetting(ctx, KeyNotifWebhookURL, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	host, err := s.getStringSetting(ctx, KeyNotifSMTPHost, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	port, err := s.getIntSetting(ctx, KeyNotifSMTPPort)
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	if port == 0 {
+		port = 587
+	}
+	user, err := s.getStringSetting(ctx, KeyNotifSMTPUsername, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	pass, err := s.getStringSetting(ctx, KeyNotifSMTPPassword, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	from, err := s.getStringSetting(ctx, KeyNotifSMTPFrom, "")
+	if err != nil {
+		return NotifChannelConfig{}, err
+	}
+	return NotifChannelConfig{
+		DingTalkWebhook: ding, FeishuWebhook: fei, WeComWebhook: wecom, WebhookURL: wh,
+		SMTPHost: host, SMTPPort: int(port), SMTPUsername: user, SMTPPassword: pass, SMTPFrom: from,
+		SMTPEEnabled: host != "",
+	}, nil
 }
 
 // getIntSetting 读取一个 int 类型设置项；value 为 null/缺失返回 0,nil。

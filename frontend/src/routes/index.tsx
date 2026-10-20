@@ -47,6 +47,7 @@ const AuditPage = lazy(() => import('@/features/audit/AuditPage'));
 const NotificationsPage = lazy(() => import('@/features/notifications/NotificationsPage'));
 const PipelineListPage = lazy(() => import('@/features/pipelines/List'));
 const PipelineRunDetailPage = lazy(() => import('@/features/pipelines/RunDetail'));
+const PromotionsPage = lazy(() => import('@/features/pipelines/Promotions'));
 const InferenceModelsPage = lazy(() => import('@/features/inference/ModelsPage'));
 const InferenceServicesPage = lazy(() => import('@/features/inference/ServicesPage'));
 const InferenceServiceDetailPage = lazy(() => import('@/features/inference/ServiceDetail'));
@@ -124,6 +125,7 @@ export default function AppRoutes() {
         <Route path="admin/knowledge-base" element={<RequirePermission code="kb:manage"><Lazy><KnowledgeBasePage /></Lazy></RequirePermission>} />
         <Route path="pipelines" element={<Lazy><PipelineListPage /></Lazy>} />
         <Route path="pipeline-runs/:id" element={<Lazy><PipelineRunDetailPage /></Lazy>} />
+        <Route path="promotions" element={<Lazy><PromotionsPage /></Lazy>} />
         <Route path="inference" element={<Lazy><InferenceModelsPage /></Lazy>} />
         <Route path="inference/services" element={<Lazy><InferenceServicesPage /></Lazy>} />
         <Route path="inference/services/:id" element={<Lazy><InferenceServiceDetailPage /></Lazy>} />

@@ -16,6 +16,7 @@ import (
 	"github.com/vortexops/vortexops/internal/application/configapp"
 	"github.com/vortexops/vortexops/internal/application/dnsapp"
 	"github.com/vortexops/vortexops/internal/application/k8sapp"
+	"github.com/vortexops/vortexops/internal/application/pipelineapp"
 	"github.com/vortexops/vortexops/internal/application/releaseapp"
 	"github.com/vortexops/vortexops/internal/application/systemapp"
 	"github.com/vortexops/vortexops/internal/config"
@@ -33,6 +34,7 @@ import (
 	"github.com/vortexops/vortexops/internal/infrastructure/kafka"
 	"github.com/vortexops/vortexops/internal/infrastructure/pipeline/executor"
 	"github.com/vortexops/vortexops/internal/infrastructure/pipeline/pipelineworker"
+	"github.com/vortexops/vortexops/internal/infrastructure/s3"
 	"github.com/vortexops/vortexops/internal/platform/db"
 	"github.com/vortexops/vortexops/internal/platform/logger"
 	"github.com/vortexops/vortexops/internal/platform/redis"
@@ -103,6 +105,29 @@ func run() error {
 	dnsRepo := dnsrepo.New(dbPool.Pool)
 	releaseSvc.WithDNSMapper(dnsapp.New(dnsRepo, clusterSvc))
 
+	// pipeline 服务（签名记录适配器需要）。
+	pipeSvc := pipelineapp.New(pipeRepo, nil, cfg.Kafka.Brokers, "pipeline", cfg.Kafka.TopicPipeline)
+
+	// S3 对象存储（SBOM 上传；可选：配置 endpoint 后启用）。
+	var logStore *s3.LogStore
+	if cfg.S3.Enabled {
+		logStore, err = s3.NewLogStore(ctx, s3.Config{
+			Endpoint:  cfg.S3.Endpoint,
+			AccessKey: cfg.S3.AccessKey,
+			SecretKey: cfg.S3.SecretKey,
+			Bucket:    cfg.S3.Bucket,
+			Region:    cfg.S3.Region,
+			UseSSL:    cfg.S3.UseSSL,
+		})
+		if err != nil {
+			return fmt.Errorf("init s3 log store: %w", err)
+		}
+	}
+
+	// 制品签名/SBOM 工具二进制路径从系统设置读取（空则使用系统 PATH）。
+	cosignPath, _ := systemSvc.GetCosignPath(ctx)
+	syftPath, _ := systemSvc.GetSyftPath(ctx)
+
 	// 执行引擎注册阶段执行器。
 	engine := executor.NewEngine()
 	engine.Register(executor.NewBuildExecutor(buildSvc, connector.JenkinsClient))
@@ -110,6 +135,8 @@ func run() error {
 	engine.Register(executor.NewDeployExecutor(releaseSvc))
 	engine.Register(executor.NewVerifyExecutor(releaseSvc))
 	engine.Register(executor.NewPromoteExecutor(releaseSvc))
+	engine.Register(executor.NewSignExecutor(pipelineapp.NewImageResolverAdapter(buildRepo), pipelineapp.NewSignatureRecorderAdapter(pipeSvc), cosignPath))
+	engine.Register(executor.NewSBOMExecutor(pipelineapp.NewImageResolverAdapter(buildRepo), logStore, pipelineapp.NewSignatureRecorderAdapter(pipeSvc), syftPath))
 
 	var producer *kafka.Producer
 	if cfg.Kafka.Enabled {

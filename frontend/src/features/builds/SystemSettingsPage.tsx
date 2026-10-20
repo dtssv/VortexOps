@@ -51,6 +51,8 @@ export default function SystemSettingsPage() {
           { key: 'base-images', label: <Space><ContainerOutlined />基础镜像</Space>, children: <BaseImageTab /> },
           { key: 'build-tools', label: <Space><BuildOutlined />构建工具</Space>, children: <BuildToolTab /> },
           { key: 'ai-diagnosis', label: <Space><RobotOutlined />AI 诊断</Space>, children: <AIDiagnosisTab /> },
+          { key: 'notif-channels', label: <Space><ToolOutlined />通知渠道</Space>, children: <NotifChannelsTab /> },
+          { key: 'gitops', label: <Space><ToolOutlined />GitOps</Space>, children: <GitOpsTab /> },
         ]}
       />
     </PageContainer>
@@ -1431,6 +1433,223 @@ function JumpServerTab() {
           </Form.Item>
           <Form.Item name="secret_key" label="Secret Key" rules={[{ required: true, message: '请输入 Secret Key' }]}>
             <Input.Password placeholder="JumpServer API Secret Key" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
+              保存
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+    </>
+  );
+}
+
+// ============== Tab：通知渠道（feishu/wecom/dingtalk/webhook + SMTP）==============
+
+const KEY_NOTIF_DINGTALK = 'notif.dingtalk_webhook';
+const KEY_NOTIF_FEISHU = 'notif.feishu_webhook';
+const KEY_NOTIF_WECOM = 'notif.wecom_webhook';
+const KEY_NOTIF_WEBHOOK = 'notif.webhook_url';
+const KEY_NOTIF_SMTP_HOST = 'notif.smtp_host';
+const KEY_NOTIF_SMTP_PORT = 'notif.smtp_port';
+const KEY_NOTIF_SMTP_USERNAME = 'notif.smtp_username';
+const KEY_NOTIF_SMTP_PASSWORD = 'notif.smtp_password';
+const KEY_NOTIF_SMTP_FROM = 'notif.smtp_from';
+
+function NotifChannelsTab() {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
+  const [webhookForm] = Form.useForm();
+  const [smtpForm] = Form.useForm();
+
+  const { data: settings } = useQuery({
+    queryKey: ['system-settings', 'all'],
+    queryFn: () => systemApi.listAll(),
+  });
+  const items = Array.isArray(settings) ? settings : [];
+  const get = (key: string) => items.find((x) => x.key === key)?.value;
+
+  const dingTalk = get(KEY_NOTIF_DINGTALK) ?? '';
+  const feishu = get(KEY_NOTIF_FEISHU) ?? '';
+  const wecom = get(KEY_NOTIF_WECOM) ?? '';
+  const webhook = get(KEY_NOTIF_WEBHOOK) ?? '';
+  const smtpHost = get(KEY_NOTIF_SMTP_HOST) ?? '';
+  const smtpPort = get(KEY_NOTIF_SMTP_PORT) ?? 587;
+  const smtpUser = get(KEY_NOTIF_SMTP_USERNAME) ?? '';
+  const smtpPass = get(KEY_NOTIF_SMTP_PASSWORD) ?? '';
+  const smtpFrom = get(KEY_NOTIF_SMTP_FROM) ?? '';
+
+  useEffect(() => {
+    webhookForm.setFieldsValue({
+      dingtalk: dingTalk, feishu, wecom, webhook,
+    });
+  }, [dingTalk, feishu, wecom, webhook, webhookForm]);
+
+  useEffect(() => {
+    smtpForm.setFieldsValue({
+      host: smtpHost, port: smtpPort, username: smtpUser, password: smtpPass, from: smtpFrom,
+    });
+  }, [smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpForm]);
+
+  const saveWebhookMutation = useMutation({
+    mutationFn: async (v: any) => {
+      await systemApi.update(KEY_NOTIF_DINGTALK, { value: v.dingtalk ?? '', description: '钉钉机器人默认 webhook URL' });
+      await systemApi.update(KEY_NOTIF_FEISHU, { value: v.feishu ?? '', description: '飞书自定义机器人默认 webhook URL' });
+      await systemApi.update(KEY_NOTIF_WECOM, { value: v.wecom ?? '', description: '企业微信群机器人默认 webhook URL' });
+      await systemApi.update(KEY_NOTIF_WEBHOOK, { value: v.webhook ?? '', description: '通用 webhook 默认 URL' });
+    },
+    onSuccess: () => {
+      message.success('通知渠道 webhook 配置已保存');
+      queryClient.invalidateQueries({ queryKey: ['system-settings'] });
+    },
+    onError: (e: any) => message.error(e?.message || '保存失败'),
+  });
+
+  const saveSMTPMutation = useMutation({
+    mutationFn: async (v: any) => {
+      await systemApi.update(KEY_NOTIF_SMTP_HOST, { value: v.host ?? '', description: 'SMTP 邮件服务器主机' });
+      await systemApi.update(KEY_NOTIF_SMTP_PORT, { value: Number(v.port) || 587, description: 'SMTP 端口' });
+      await systemApi.update(KEY_NOTIF_SMTP_USERNAME, { value: v.username ?? '', description: 'SMTP 用户名' });
+      await systemApi.update(KEY_NOTIF_SMTP_PASSWORD, { value: v.password ?? '', description: 'SMTP 密码' });
+      await systemApi.update(KEY_NOTIF_SMTP_FROM, { value: v.from ?? '', description: '发件人地址' });
+    },
+    onSuccess: () => {
+      message.success('SMTP 邮件配置已保存');
+      queryClient.invalidateQueries({ queryKey: ['system-settings'] });
+    },
+    onError: (e: any) => message.error(e?.message || '保存失败'),
+  });
+
+  return (
+    <>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="通知渠道：配置各 IM 机器人默认 webhook 与 SMTP 邮件。"
+        description="外发通知在 Recipient 为空时回退使用此处的默认 webhook。支持钉钉、飞书、企业微信群机器人与通用 webhook。SMTP 配置优先于环境变量（SMTP_HOST 等）。"
+      />
+      <Card title="IM 机器人 Webhook">
+        <Form layout="vertical" form={webhookForm} onFinish={(v) => saveWebhookMutation.mutate(v)}>
+          <Form.Item name="dingtalk" label="钉钉机器人 Webhook" tooltip="钉钉群机器人「自定义」接入，复制 webhook URL（含 access_token）">
+            <Input placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
+          </Form.Item>
+          <Form.Item name="feishu" label="飞书自定义机器人 Webhook" tooltip="飞书群「设置-群机器人-添加机器人-自定义机器人」获取">
+            <Input placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx" />
+          </Form.Item>
+          <Form.Item name="wecom" label="企业微信群机器人 Webhook" tooltip="企业微信群「添加群机器人」获取">
+            <Input placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx" />
+          </Form.Item>
+          <Form.Item name="webhook" label="通用 Webhook" tooltip="通用 JSON POST 接收地址（body 含 subject/body/payload）">
+            <Input placeholder="https://example.com/hooks/notify" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={saveWebhookMutation.isPending}>
+              保存
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+
+      <Card title="SMTP 邮件配置" style={{ marginTop: 16 }}>
+        <Form layout="vertical" form={smtpForm} onFinish={(v) => saveSMTPMutation.mutate(v)}>
+          <Form.Item name="host" label="SMTP 主机">
+            <Input placeholder="smtp.example.com（留空回退环境变量）" />
+          </Form.Item>
+          <Form.Item name="port" label="端口">
+            <Input type="number" placeholder="587" />
+          </Form.Item>
+          <Form.Item name="username" label="用户名">
+            <Input placeholder="user@example.com" />
+          </Form.Item>
+          <Form.Item name="password" label="密码">
+            <Input.Password placeholder="SMTP 登录密码或授权码" />
+          </Form.Item>
+          <Form.Item name="from" label="发件人地址">
+            <Input placeholder="noreply@example.com（留空回退环境变量 SMTP_FROM）" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={saveSMTPMutation.isPending}>
+              保存
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+    </>
+  );
+}
+
+// ============== Tab：GitOps 配置 ==============
+
+const KEY_GITOPS_URL = 'gitops.repo_url';
+const KEY_GITOPS_BRANCH = 'gitops.branch';
+const KEY_GITOPS_USER = 'gitops.username';
+const KEY_GITOPS_PASS = 'gitops.password';
+const KEY_GITOPS_WORKDIR = 'gitops.work_dir';
+
+function GitOpsTab() {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
+  const [form] = Form.useForm();
+
+  const { data: settings } = useQuery({
+    queryKey: ['system-settings', 'all'],
+    queryFn: () => systemApi.listAll(),
+  });
+  const items = Array.isArray(settings) ? settings : [];
+  const get = (key: string) => items.find((x) => x.key === key)?.value;
+
+  const url = get(KEY_GITOPS_URL) ?? '';
+  const branch = get(KEY_GITOPS_BRANCH) ?? 'main';
+  const user = get(KEY_GITOPS_USER) ?? '';
+  const pass = get(KEY_GITOPS_PASS) ?? '';
+  const workDir = get(KEY_GITOPS_WORKDIR) ?? '';
+
+  useEffect(() => {
+    form.setFieldsValue({ url, branch, username: user, password: pass, work_dir: workDir });
+  }, [url, branch, user, pass, workDir, form]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (v: any) => {
+      await systemApi.update(KEY_GITOPS_URL, { value: v.url ?? '', description: 'GitOps manifest 仓库 URL（为空则不启用）' });
+      await systemApi.update(KEY_GITOPS_BRANCH, { value: v.branch ?? 'main', description: 'GitOps manifest 仓库分支' });
+      await systemApi.update(KEY_GITOPS_USER, { value: v.username ?? '', description: 'GitOps 仓库认证用户名' });
+      await systemApi.update(KEY_GITOPS_PASS, { value: v.password ?? '', description: 'GitOps 仓库认证密码/token' });
+      await systemApi.update(KEY_GITOPS_WORKDIR, { value: v.work_dir ?? '', description: 'GitOps 本地工作目录' });
+    },
+    onSuccess: () => {
+      message.success('GitOps 配置已保存');
+      queryClient.invalidateQueries({ queryKey: ['system-settings'] });
+    },
+    onError: (e: any) => message.error(e?.message || '保存失败'),
+  });
+
+  return (
+    <>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="GitOps：配置 manifest 仓库后，发布时自动把渲染后的 YAML 推送到 Git 仓库（声明式部署）。"
+        description="Repo URL 为空则不启用 GitOps。支持 HTTPS（用户名+密码/token）认证。工作目录留空则每次 clone 到临时目录。"
+      />
+      <Card title="GitOps Manifest 仓库">
+        <Form layout="vertical" form={form} onFinish={(v) => saveMutation.mutate(v)}>
+          <Form.Item name="url" label="仓库 URL" tooltip="为空则不启用 GitOps">
+            <Input placeholder="https://git.example.com/org/vortexops-manifests.git" />
+          </Form.Item>
+          <Form.Item name="branch" label="分支">
+            <Input placeholder="main" />
+          </Form.Item>
+          <Form.Item name="username" label="用户名">
+            <Input placeholder="git 用户名（HTTPS 认证）" />
+          </Form.Item>
+          <Form.Item name="password" label="密码 / Token">
+            <Input.Password placeholder="git 密码或 Personal Access Token" />
+          </Form.Item>
+          <Form.Item name="work_dir" label="本地工作目录" tooltip="留空则每次 clone 到临时目录">
+            <Input placeholder="/tmp/vortexops-gitops（留空使用临时目录）" />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>

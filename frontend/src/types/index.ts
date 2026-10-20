@@ -880,25 +880,35 @@ export interface PipelineRun {
 export interface Promotion {
   id: number;
   uuid: string;
-  pipeline_id: number;
-  from_environment: string;
-  to_environment: string;
-  artifact_ref: string;
-  status: string;
-  version: number;
-  created_at: string;
+  workspace_id: number;
+  application_id: number;
+  source_env: string;
+  target_env: string;
+  artifact_image_id: number;
+  artifact_config_version?: number;
+  target_group_ids?: number[];
+  strategy: string; // canary | blue_green | rolling
+  auto_promote_on_verify: boolean;
+  status: string; // pending | deploying | verifying | succeeded | failed | aborted
+  pipeline_run_id?: number;
+  approval_instance_id?: number;
+  started_by: number;
+  started_at: string;
+  finished_at?: string;
 }
 
 export interface ArtifactSignature {
   id: number;
   uuid: string;
   image_id: number;
-  signer: string;
   signature_type: string;
-  verified: boolean;
-  payload?: Record<string, any>;
-  version: number;
-  created_at: string;
+  public_key_ref?: string;
+  signed_by?: string;
+  signed_at: string;
+  sbom_storage_key?: string;
+  sbom_format?: string;
+  provenance?: Record<string, any>;
+  verification_status: string;
 }
 
 export interface ModelRegistry {

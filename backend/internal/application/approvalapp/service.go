@@ -136,6 +136,19 @@ func (s *Service) GetByID(ctx context.Context, id int64) (*approval.Approval, er
 	return a, nil
 }
 
+// GetPendingByResource 查询某资源的 pending 审批（供晋升状态机校验用）。
+// 无 pending 审批时返回 nil, nil。
+func (s *Service) GetPendingByResource(ctx context.Context, rt approval.ResourceType, resourceID int64) (*approval.Approval, error) {
+	a, err := s.repo.GetPendingByResource(ctx, rt, resourceID)
+	if err != nil {
+		if errors.Is(err, approval.ErrApprovalNotFound) {
+			return nil, nil
+		}
+		return nil, apperr.Internal("get pending approval", err)
+	}
+	return a, nil
+}
+
 // List 分页查询审批。
 func (s *Service) List(ctx context.Context, q approval.Query, page, size int) ([]*approval.Approval, int64, error) {
 	q.Offset = (page - 1) * size

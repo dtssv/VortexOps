@@ -85,6 +85,30 @@ export interface K8sEvent {
   count: number;
 }
 
+// --- CRD 类型 ---
+export interface CRDSummary {
+  name: string;
+  group: string;
+  version: string;
+  kind: string;
+  scope: string; // Namespaced | Cluster
+  categories: string[];
+  short_names: string[];
+  created_at: string;
+  established: boolean;
+}
+
+export interface CRResource {
+  name: string;
+  namespace: string;
+  kind: string;
+  api_version: string;
+  created_at: string;
+  uid: string;
+  spec?: Record<string, any>;
+  status?: Record<string, any>;
+}
+
 export const k8sApi = {
   // 节点
   listNodes: (clusterId: number) => get<K8sNode[]>(`/k8s/clusters/${clusterId}/nodes`),
@@ -146,4 +170,18 @@ export const k8sApi = {
   // 事件
   listEvents: (clusterId: number, namespace?: string, fieldSelector?: string) =>
     get<K8sEvent[]>(`/k8s/clusters/${clusterId}/events`, { namespace, fieldSelector }),
+
+  // --- CRD 管理 ---
+  listCRDs: (clusterId: number) =>
+    get<CRDSummary[]>(`/k8s/clusters/${clusterId}/crds`),
+  getCRD: (clusterId: number, crdName: string) =>
+    get<any>(`/k8s/clusters/${clusterId}/crds/${crdName}`),
+  listCRDResources: (clusterId: number, crdName: string, namespace?: string) =>
+    get<CRResource[]>(`/k8s/clusters/${clusterId}/crds/${crdName}/resources`, { namespace }),
+  getCRDResource: (clusterId: number, crdName: string, resourceName: string, namespace?: string) =>
+    get<any>(`/k8s/clusters/${clusterId}/crds/${crdName}/resources/${resourceName}`, { namespace }),
+  getCRDResourceYAML: (clusterId: number, crdName: string, resourceName: string, namespace?: string) =>
+    get<string>(`/k8s/clusters/${clusterId}/crds/${crdName}/resources/${resourceName}`, { namespace, format: 'yaml' }),
+  deleteCRDResource: (clusterId: number, crdName: string, resourceName: string, namespace?: string) =>
+    del(`/k8s/clusters/${clusterId}/crds/${crdName}/resources/${resourceName}`, { namespace }),
 };

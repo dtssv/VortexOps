@@ -14,10 +14,12 @@ import (
 type NotificationChannel string
 
 const (
-	ChannelInApp   NotificationChannel = "in_app"
-	ChannelEmail   NotificationChannel = "email"
-	ChannelWebhook NotificationChannel = "webhook"
+	ChannelInApp    NotificationChannel = "in_app"
+	ChannelEmail    NotificationChannel = "email"
+	ChannelWebhook  NotificationChannel = "webhook"
 	ChannelDingTalk NotificationChannel = "dingtalk"
+	ChannelFeishu   NotificationChannel = "feishu"   // 飞书机器人
+	ChannelWeCom    NotificationChannel = "wecom"    // 企业微信群机器人
 )
 
 // NotificationStatus 通知状态。
@@ -57,6 +59,12 @@ type NotificationQuery struct {
 	Limit      int
 }
 
+// PendingQuery 待投递通知查询。
+type PendingQuery struct {
+	Channels []NotificationChannel // 限定渠道（空=所有外发渠道）
+	Limit    int
+}
+
 // 领域错误。
 var (
 	ErrNotificationNotFound = errors.New("notification not found")
@@ -70,4 +78,8 @@ type Repository interface {
 	MarkRead(ctx context.Context, id int64) error
 	MarkAllRead(ctx context.Context, userID int64) error
 	CountUnread(ctx context.Context, userID int64) (int64, error)
+	// MarkSent 更新通知投递结果（sent/failed + error_message + sent_at）。
+	MarkSent(ctx context.Context, id int64, status NotificationStatus, errorMessage string) error
+	// ListPending 列出待投递（pending）的外发通知，按创建时间升序，最多 Limit 条。
+	ListPending(ctx context.Context, q PendingQuery) ([]*Notification, error)
 }

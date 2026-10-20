@@ -146,6 +146,6 @@ export async function put<T>(url: string, body?: Record<string, any>): Promise<T
   return api.put(url, body) as unknown as Promise<T>;
 }
 
-export async function del<T = void>(url: string): Promise<T> {
-  return api.delete(url) as unknown as Promise<T>;
+export async function del<T = void>(url: string, params?: Record<string, any>): Promise<T> {
+  return api.delete(url, { params }) as unknown as Promise<T>;
 }

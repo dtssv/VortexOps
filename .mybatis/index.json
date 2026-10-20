@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": 1786434341909,
+  "timestamp": 1787106407019,
   "projectRoot": "/Users/zyf/workspace/go/VortexOps",
   "entries": [
     {
@@ -14,24 +14,40 @@
       "size": 2821
     },
     {
-      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/WebMvcConfig.class",
-      "mtime": 1786096444422.0005,
-      "size": 5440
-    },
-    {
       "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/OpenApiConfig.class",
       "mtime": 1786355013653.521,
       "size": 2217
     },
     {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/TraceflowApplication.class",
+      "mtime": 1786932739245.5278,
+      "size": 1612
+    },
+    {
+      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/config/WebMvcConfig.class",
+      "mtime": 1786932741163.7725,
+      "size": 5440
+    },
+    {
       "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/infrastructure/trace/TraceAsyncConfig.class",
-      "mtime": 1786428367852.9368,
+      "mtime": 1786932742079.15,
       "size": 2455
     },
     {
-      "path": "../../java/AIProject/traceflow-backend/target/classes/cn/com/casmart/traceflow/TraceflowApplication.class",
-      "mtime": 1786434341179.4207,
-      "size": 1612
+      "path": "../../java/AIProject/purchase-kb/target/classes/cn/com/casmart/purchasekb/PurchaseKbApplication.class",
+      "mtime": 1787100736212.3208,
+      "size": 1036,
+      "mapperScan": {
+        "basePackages": [
+          "cn.com.casmart.purchasekb.infrastructure.persistence.mapper"
+        ],
+        "sourceFile": "/Users/zyf/workspace/java/AIProject/purchase-kb/target/classes/cn/com/casmart/purchasekb/PurchaseKbApplication.class"
+      }
+    },
+    {
+      "path": "../../java/AIProject/purchase-kb/target/classes/cn/com/casmart/purchasekb/infrastructure/config/WebMvcConfig.class",
+      "mtime": 1787105004238.0156,
+      "size": 2259
     }
   ]
 }
